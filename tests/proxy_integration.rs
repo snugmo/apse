@@ -1533,8 +1533,8 @@ fn clipboard_session_is_audited() {
         *lines,
         vec![
             "app=testapp instance=inst selection=clipboard action=set origin=own",
-            "app=testapp instance=inst selection=clipboard action=read origin=own mime=text/plain gate=forward fd_kind=memfd payload_bytes=15",
-            "app=testapp instance=inst selection=clipboard action=serve origin=own mime=text/plain fd_kind=memfd payload_bytes=15",
+            "app=testapp instance=inst selection=clipboard action=read origin=own mime=text/plain gate=forward fd_kind=memfd payload_bytes=13",
+            "app=testapp instance=inst selection=clipboard action=serve origin=own mime=text/plain fd_kind=memfd payload_bytes=13",
             "app=testapp instance=inst selection=clipboard action=read origin=foreign mime=text/plain gate=forward fd_kind=memfd payload_bytes=11",
             "app=testapp instance=inst selection=clipboard action=clear origin=foreign",
         ],
@@ -1573,8 +1573,8 @@ fn clipboard_deny_is_audited_with_a_drop() {
         vec![
             "app=testapp instance=inst selection=clipboard action=set origin=own",
             "app=testapp instance=inst selection=clipboard action=read origin=foreign mime=text/plain gate=dropped fd_kind=memfd payload_bytes=0",
-            "app=testapp instance=inst selection=clipboard action=read origin=own mime=text/plain gate=forward fd_kind=memfd payload_bytes=15",
-            "app=testapp instance=inst selection=clipboard action=serve origin=own mime=text/plain fd_kind=memfd payload_bytes=15",
+            "app=testapp instance=inst selection=clipboard action=read origin=own mime=text/plain gate=forward fd_kind=memfd payload_bytes=13",
+            "app=testapp instance=inst selection=clipboard action=serve origin=own mime=text/plain fd_kind=memfd payload_bytes=13",
             "app=testapp instance=inst selection=clipboard action=clear origin=foreign",
         ],
         "the session's five selection events: the drop is immediate, the probes settle in the window"
@@ -2144,8 +2144,8 @@ fn drag_serve_is_audited_as_drag() {
         *lines,
         vec![
             "app=testapp instance=inst selection=drag action=set origin=own",
-            "app=testapp instance=inst selection=clipboard action=read origin=own mime=text/plain gate=forward fd_kind=memfd payload_bytes=15",
-            "app=testapp instance=inst selection=drag action=serve origin=own mime=text/plain fd_kind=memfd payload_bytes=15",
+            "app=testapp instance=inst selection=clipboard action=read origin=own mime=text/plain gate=forward fd_kind=memfd payload_bytes=13",
+            "app=testapp instance=inst selection=drag action=serve origin=own mime=text/plain fd_kind=memfd payload_bytes=13",
         ],
         "the session's three selection events: the serve is the drag's (6.5.5)"
     );
@@ -3443,8 +3443,8 @@ fn broker_approval_is_audited() {
         *lines,
         vec![
             "app=testapp instance=inst selection=clipboard action=set origin=own",
-            "app=testapp instance=inst selection=clipboard action=read origin=own mime=text/plain gate=forward fd_kind=memfd payload_bytes=15",
-            "app=testapp instance=inst selection=clipboard action=serve origin=own mime=text/plain fd_kind=memfd payload_bytes=15",
+            "app=testapp instance=inst selection=clipboard action=read origin=own mime=text/plain gate=forward fd_kind=memfd payload_bytes=13",
+            "app=testapp instance=inst selection=clipboard action=serve origin=own mime=text/plain fd_kind=memfd payload_bytes=13",
             "app=testapp instance=inst selection=clipboard action=read origin=foreign mime=text/plain gate=approved fd_kind=memfd payload_bytes=11",
             "app=testapp instance=inst selection=clipboard action=clear origin=foreign",
         ],
