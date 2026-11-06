@@ -2,7 +2,7 @@
 
 These XML files are copied from the wlroots 0.20.2 source tree
 (https://gitlab.freedesktop.org/wlroots/wlroots, `protocol/` directory),
-which is the wlroots release that sway on this system (Fedora 43/44)
+which is the wlroots release that sway on this system (Fedora 45)
 implements. They are used to generate `&'static Interface` tables
 (see src/proxy/wlr_tables.rs) that the Wayland proxy needs to parse
 messages on the wlr protocol family.
