@@ -52,7 +52,7 @@ use super::namespaces;
 const DEV_NODES: [&str; 6] = ["null", "zero", "full", "urandom", "random", "tty"];
 
 /// The per-instance runtime dir on the **host**
-/// (`$XDG_RUNTIME_DIR/wlsctx/<app>-<inst>`): home of the tagged
+/// (`$XDG_RUNTIME_DIR/apse/<app>-<inst>`): home of the tagged
 /// Wayland socket (Phase 5), of the build scratch, and the dir that
 /// the app sees as its own runtime dir (bound into the fresh `/run`).
 /// The rootfs scratch dir on the **host**: a per-instance directory
@@ -66,7 +66,7 @@ const DEV_NODES: [&str; 6] = ["null", "zero", "full", "urandom", "random", "tty"
 /// via `/dev` and `/sys` anyway. `S` removes it on exit.
 pub(crate) fn rootfs_scratch_dir(cfg: &SandboxConfig) -> String {
     let inst = namespaces::cgroup_name_for(&cfg.app_id, &cfg.instance_id);
-    format!("/var/tmp/.wlsctx/{inst}")
+    format!("/var/tmp/.apse/{inst}")
 }
 
 /// The per-instance runtime dir's path *inside the sandbox*: the
@@ -78,7 +78,7 @@ pub(crate) fn rootfs_scratch_dir(cfg: &SandboxConfig) -> String {
 pub(crate) fn sandbox_instance_dir(cfg: &SandboxConfig) -> String {
     let uid = nix::unistd::getuid().as_raw();
     format!(
-        "/run/user/{uid}/wlsctx/{}",
+        "/run/user/{uid}/apse/{}",
         namespaces::cgroup_name_for(&cfg.app_id, &cfg.instance_id)
     )
 }
@@ -87,7 +87,7 @@ pub(crate) fn instance_runtime_dir(cfg: &SandboxConfig) -> String {
     let uid = nix::unistd::getuid().as_raw();
     let xdg = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{uid}"));
     format!(
-        "{xdg}/wlsctx/{}",
+        "{xdg}/apse/{}",
         namespaces::cgroup_name_for(&cfg.app_id, &cfg.instance_id)
     )
 }
@@ -362,7 +362,7 @@ pub(crate) fn build_rootfs(cfg: &SandboxConfig) -> Result<()> {
     std::fs::create_dir(&user_dir).context("creating the per-uid runtime dir")?;
     std::fs::set_permissions(&user_dir, std::fs::Permissions::from_mode(0o700))
         .with_context(|| format!("setting the mode of {user_dir}"))?;
-    let inst_dir = format!("{user_dir}/wlsctx/{inst_name}");
+    let inst_dir = format!("{user_dir}/apse/{inst_name}");
     std::fs::create_dir_all(&inst_dir).with_context(|| format!("creating {inst_dir}"))?;
     mount(
         &format!("{scratch}/runtime"),
@@ -605,7 +605,7 @@ mod tests {
         // Only the per-instance dir is visible under the runtime dir.
         assert_eq!(
             get("RUN"),
-            "wlsctx",
+            "apse",
             "only the per-instance dir may be visible under the runtime dir:\n{out}"
         );
         // The host Wayland socket must not be visible.
@@ -632,7 +632,7 @@ mod tests {
             &[
                 "/bin/sh",
                 "-c",
-                "touch \"$HOME/wlsctx-write-probe\" && rm -f \"$HOME/wlsctx-write-probe\" && echo ok || echo fail",
+                "touch \"$HOME/apse-write-probe\" && rm -f \"$HOME/apse-write-probe\" && echo ok || echo fail",
             ],
             &cfg("app", "2", false),
         );

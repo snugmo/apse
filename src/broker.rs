@@ -40,7 +40,7 @@
 //!   consent flow above covers the copy-*in* direction). See Phase 6
 //!   in the README threat model.
 //!
-//! **The decision socket** (`wlsctx --decide` → the broker): bound
+//! **The decision socket** (`apse --decide` → the broker): bound
 //! **once, for the life of the session** (in interactive mode), at
 //! the runtime directory's [`DECISION_SOCKET`] — no more per-prompt
 //! bind, no more `latest` pointer:
@@ -103,8 +103,8 @@ pub const NOTIFY_KIND: &str = "clipboard-write";
 pub const PROTOCOL_VERSION: u8 = 1;
 
 /// The decision socket's file name, inside the runtime directory
-/// (`$XDG_RUNTIME_DIR/wlsctx`). Bound once for the life of a session
-/// (interactive mode only) and answered by `wlsctx --decide`.
+/// (`$XDG_RUNTIME_DIR/apse`). Bound once for the life of a session
+/// (interactive mode only) and answered by `apse --decide`.
 pub const DECISION_SOCKET: &str = "decision.sock";
 /// How long the main loop's read of a decider connection is given:
 /// the decider is a trusted local CLI whose line arrives on connect,
@@ -196,7 +196,7 @@ pub enum UserDecision {
     Deny,
 }
 
-/// The decider's (`wlsctx --decide`) request on the session decision
+/// The decider's (`apse --decide`) request on the session decision
 /// socket: `kind` is [`LIST_KIND`] (no other fields) or
 /// [`DECIDE_KIND`] (with a `decision`; an optional `prompt` id to
 /// target a specific pending prompt, the oldest when absent).
@@ -503,7 +503,7 @@ pub enum AutoDecide {
 #[derive(Clone)]
 pub struct BrokerArgs {
     /// Where the session decision socket lives:
-    /// `$XDG_RUNTIME_DIR/wlsctx`.
+    /// `$XDG_RUNTIME_DIR/apse`.
     pub runtime_dir: PathBuf,
     /// Skip prompting entirely (a test hook): decide every request
     /// the given way (no decision socket is bound in this mode).
@@ -847,7 +847,7 @@ pub fn run(args: &BrokerArgs, listener: UnixListener) -> io::Result<()> {
     }
 }
 
-/// Service one decider (`wlsctx --decide`) connection on the session
+/// Service one decider (`apse --decide`) connection on the session
 /// decision socket: read one request line, dispatch (`list` or
 /// `decide`), write one reply line, and close. Runs on the main
 /// thread: the decider is a trusted local CLI that sends its line
@@ -1153,13 +1153,13 @@ fn selection_name(s: &str) -> &'static str {
 /// busy session can be answered without a prior listing).
 /// Fire-and-forget: if `notify-send` is missing or the session bus is
 /// unreachable the user can still answer — the prompt is listed by
-/// `wlsctx --decide` on the session decision socket (whose path is
+/// `apse --decide` on the session decision socket (whose path is
 /// logged).
 fn announce(req: &ClipboardRead, prompt_id: u32, decision_path: &Path) {
-    let summary = "wlsctx: clipboard consent";
+    let summary = "apse: clipboard consent";
     let body = format!(
         "The sandboxed app {}/{} wants to read your {} (`{}`).\n\
-         Prompt #{prompt_id} — reply: wlsctx --decide --prompt {prompt_id} --decision=allow (or =deny)",
+         Prompt #{prompt_id} — reply: apse --decide --prompt {prompt_id} --decision=allow (or =deny)",
         req.app,
         req.instance,
         selection_name(&req.selection),
@@ -1169,7 +1169,7 @@ fn announce(req: &ClipboardRead, prompt_id: u32, decision_path: &Path) {
         "waiting for the user's decision (prompt #{prompt_id}; the decider answers on {decision_path:?})"
     );
     match process::Command::new("notify-send")
-        .args(["--app-name", "wlsctx", summary, &body])
+        .args(["--app-name", "apse", summary, &body])
         .spawn()
     {
         Ok(_) => {}
@@ -1182,7 +1182,7 @@ fn announce(req: &ClipboardRead, prompt_id: u32, decision_path: &Path) {
 /// an unreachable session bus simply loses the notice; the write
 /// itself is unaffected (it never waited on this).
 fn announce_write(note: &ClipboardWrite) {
-    let summary = "wlsctx: clipboard write (copy-out)";
+    let summary = "apse: clipboard write (copy-out)";
     let body = format!(
         "The sandboxed app {}/{} just placed data on your {}.\n\
          (copy-out only — it was not asked to read anything from the host)",
@@ -1191,7 +1191,7 @@ fn announce_write(note: &ClipboardWrite) {
         selection_name(&note.selection)
     );
     match process::Command::new("notify-send")
-        .args(["--app-name", "wlsctx", summary, &body])
+        .args(["--app-name", "apse", summary, &body])
         .spawn()
     {
         Ok(_) => {}
@@ -1336,7 +1336,7 @@ mod tests {
         // socket); the args and the core here are inert for this
         // path.
         let args = BrokerArgs {
-            runtime_dir: std::env::temp_dir().join("wlsctx-broker-nt-test"),
+            runtime_dir: std::env::temp_dir().join("apse-broker-nt-test"),
             auto_decide: None,
             timeout: Duration::from_secs(1),
         };
@@ -1577,7 +1577,7 @@ mod tests {
 
         let (mut client, broker_end) = UnixStream::pair().unwrap();
         let args = BrokerArgs {
-            runtime_dir: std::env::temp_dir().join("wlsctx-broker-it-test"),
+            runtime_dir: std::env::temp_dir().join("apse-broker-it-test"),
             auto_decide: None,
             timeout,
         };
@@ -1655,7 +1655,7 @@ mod tests {
         let line = encode_request(&read_request("app-a", "text/plain")).unwrap();
         client.write_all(line.as_bytes()).unwrap();
         let args = BrokerArgs {
-            runtime_dir: std::env::temp_dir().join("wlsctx-broker-degraded-test"),
+            runtime_dir: std::env::temp_dir().join("apse-broker-degraded-test"),
             auto_decide: None,
             timeout: Duration::from_secs(30),
         };

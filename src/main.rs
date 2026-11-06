@@ -1,4 +1,4 @@
-//! wlsctx — run a command in an in-process namespaced sandbox
+//! apse — run a command in an in-process namespaced sandbox
 //! (`run`), tag a Wayland socket with an attached security context
 //! (`wayland`, the original single-purpose mode) and optionally relay
 //! sandboxed clients through a transparent proxy (`wayland --proxy`),
@@ -29,7 +29,7 @@ use std::time::Duration;
 use crate::cli::{BrokerArgs, Cli, Command, DbusProxyArgs, DecideArgs, WaylandArgs, XwaylandArgs};
 use crate::wayland::context::create_security_context;
 use crate::wayland::listener::obtain_listener;
-use wlsctx::proxy::LoopEnd;
+use apse::proxy::LoopEnd;
 
 fn main() -> Result<()> {
     let env = Env::default().default_filter_or("warn");
@@ -46,13 +46,13 @@ fn main() -> Result<()> {
     // fixes its own name on the second pass; A and B inherit the
     // name at fork, and B's later app exec takes the app's. A
     // failed write only costs the cosmetic name (unconfined mode:
-    // the name is already "wlsctx" from the binary, the write is a
+    // the name is already "apse" from the binary, the write is a
     // no-op).
     // The bare name (no newline): this kernel's comm writer no longer
     // strips a trailing one (7.2.11 `comm_write` copies into a
     // zero-padded buffer and passes it to `set_task_comm` as-is), so
     // a newline would land *inside* the 15-char comm.
-    let comm = c"wlsctx";
+    let comm = c"apse";
     let fd = unsafe { libc::open(c"/proc/self/comm".as_ptr(), libc::O_WRONLY) };
     if fd >= 0 {
         unsafe {
@@ -147,18 +147,18 @@ fn resolve_listener_path(p: &path::Path) -> Result<path::PathBuf> {
 /// The proxy's global-allowlist policy, as given on the CLI.
 ///
 /// An absent `--allow-globals` yields an empty list, which must be
-/// the Phase 1 pass-through (every global shown). [`wlsctx::proxy::Policy::from_names`]
+/// the Phase 1 pass-through (every global shown). [`apse::proxy::Policy::from_names`]
 /// alone cannot express that distinction — it always builds an
 /// *active* (filtering) policy, so fed with an empty list it hides
 /// **everything** (the client cannot even bind `wl_compositor`).
 /// Only a non-empty list engages the allowlist; blank entries
 /// (e.g. `--allow-globals "a,,b"`) are ignored, mirroring
-/// [`wlsctx::proxy::Policy::from_csv`].
-fn policy_from_cli(names: Vec<String>) -> wlsctx::proxy::Policy {
+/// [`apse::proxy::Policy::from_csv`].
+fn policy_from_cli(names: Vec<String>) -> apse::proxy::Policy {
     if names.is_empty() {
-        wlsctx::proxy::Policy::all()
+        apse::proxy::Policy::all()
     } else {
-        wlsctx::proxy::Policy::from_names(
+        apse::proxy::Policy::from_names(
             names
                 .into_iter()
                 .map(|n| n.trim().to_owned())
@@ -176,7 +176,7 @@ fn run_tag_and_park(args: &WaylandArgs) -> Result<()> {
     // category and the post-re-exec pass (loop guard: range already
     // narrowed) rebinds it instead of racing a live one. No-op in
     // unconfined mode.
-    wlsctx::mcs::self_reexec_with_category(&args.app_id, &args.instance_id)?;
+    apse::mcs::self_reexec_with_category(&args.app_id, &args.instance_id)?;
     let (app_id, instance_id, listener) = obtain_listener(args)?;
 
     if log_enabled!(Level::Info)
@@ -200,7 +200,7 @@ fn run_tag_and_park(args: &WaylandArgs) -> Result<()> {
     // (Contrast `run`, where SIGHUP terminates the app and exits 129
     // — decision #33: there is no in-place rebuild of a live
     // sandbox.)
-    match wlsctx::proxy::run_signal_loop()? {
+    match apse::proxy::run_signal_loop()? {
         LoopEnd::Stopped => {}
         LoopEnd::ReExec => {
             // Closing the reference pipe invalidates the old tag;
@@ -215,7 +215,7 @@ fn run_tag_and_park(args: &WaylandArgs) -> Result<()> {
                      (a fresh socket is re-passed and re-tagged)"
                 );
             } else {
-                wlsctx::proxy::re_exec().with_context(|| "SIGHUP re-exec failed")?;
+                apse::proxy::re_exec().with_context(|| "SIGHUP re-exec failed")?;
             }
         }
     }
@@ -231,11 +231,11 @@ fn run_proxy(args: &WaylandArgs) -> Result<()> {
     // before binding the public/tagged listeners, so both sockets
     // carry the category (and the post-re-exec pass rebinds them
     // cleanly — see `run_tag_and_park`). No-op in unconfined mode.
-    wlsctx::mcs::self_reexec_with_category(&args.app_id, &args.instance_id)?;
+    apse::mcs::self_reexec_with_category(&args.app_id, &args.instance_id)?;
     let (app_id, instance_id, public) = obtain_listener(args)?;
     // validate() guarantees Some in proxy mode.
     let tagged_path = resolve_listener_path(args.tagged_socket.as_deref().unwrap())?;
-    let tagged = wlsctx::proxy::bind_listener(&tagged_path)
+    let tagged = apse::proxy::bind_listener(&tagged_path)
         .with_context(|| format!("binding the tagged listener {tagged_path:?}"))?;
 
     if log_enabled!(Level::Info)
@@ -263,7 +263,7 @@ fn run_proxy(args: &WaylandArgs) -> Result<()> {
     } else {
         info!("No global allowlist: pass-through (all globals shown)");
     }
-    let clipboard = wlsctx::proxy::ClipboardPolicy::parse(&args.clipboard_policy)
+    let clipboard = apse::proxy::ClipboardPolicy::parse(&args.clipboard_policy)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     if clipboard.is_active() {
         info!(
@@ -273,7 +273,7 @@ fn run_proxy(args: &WaylandArgs) -> Result<()> {
         info!("Clipboard gate: pass-through (allow)");
     }
     // The audit identity. Always on; `RUST_LOG=warn` suppresses the stream.
-    let audit = wlsctx::proxy::AuditConfig::new(app_id.clone(), instance_id.clone());
+    let audit = apse::proxy::AuditConfig::new(app_id.clone(), instance_id.clone());
     // The optional prompt broker: when a denied read lands, the
     // relay asks here (a fresh connection per ask) before dropping.
     let broker = match &args.broker_socket {
@@ -292,7 +292,7 @@ fn run_proxy(args: &WaylandArgs) -> Result<()> {
                     p.display()
                 );
             }
-            Some(wlsctx::proxy::BrokerConfig {
+            Some(apse::proxy::BrokerConfig {
                 socket: p,
                 app: app_id.clone(),
                 instance: instance_id.clone(),
@@ -302,7 +302,7 @@ fn run_proxy(args: &WaylandArgs) -> Result<()> {
         }
         None => None,
     };
-    match wlsctx::proxy::event_loop(
+    match apse::proxy::event_loop(
         &public,
         &tagged_path,
         &policy,
@@ -325,7 +325,7 @@ fn run_proxy(args: &WaylandArgs) -> Result<()> {
                      (a fresh socket is re-passed and the tag re-created)"
                 );
             } else {
-                wlsctx::proxy::re_exec().with_context(|| "SIGHUP re-exec failed")?;
+                apse::proxy::re_exec().with_context(|| "SIGHUP re-exec failed")?;
             }
         }
     }
@@ -347,40 +347,40 @@ fn run_broker(args: &BrokerArgs) -> Result<()> {
     // (CLOEXEC-cleared by the manager) survives the execve, and the
     // post-re-exec invocation hits the loop guard (already `s0`).
     // No-op in unconfined mode.
-    wlsctx::mcs::self_reexec_to_s0()?;
+    apse::mcs::self_reexec_to_s0()?;
     let xdg = std::env::var("XDG_RUNTIME_DIR").context(
         "XDG_RUNTIME_DIR must be set: the broker keeps its decision \
-         socket in $XDG_RUNTIME_DIR/wlsctx",
+         socket in $XDG_RUNTIME_DIR/apse",
     )?;
     let listener = if args.socket_activation {
-        wlsctx::broker::take_activated_socket().with_context(|| {
+        apse::broker::take_activated_socket().with_context(|| {
             "no socket was received via systemd socket activation (LISTEN_FDS is not set \
-             or empty); run wlsctx through the wlsctx-broker.socket unit or use --listen"
+             or empty); run apse through the apse-broker.socket unit or use --listen"
         })?
     } else {
         let socket_path = args.listen.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "--listen is required when --socket-activation is not set \
-                 (or set WLSCTX_SOCKET_PATH)"
+                 (or set APSE_SOCKET_PATH)"
             )
         })?;
         let socket_abspath = resolve_listener_path(socket_path)?;
-        wlsctx::broker::bind_listener(&socket_abspath)
+        apse::broker::bind_listener(&socket_abspath)
             .with_context(|| format!("binding {socket_abspath:?} failed"))?
     };
     sd_notify_ready();
-    let broker_args = wlsctx::broker::BrokerArgs {
-        runtime_dir: path::PathBuf::from(xdg).join("wlsctx"),
+    let broker_args = apse::broker::BrokerArgs {
+        runtime_dir: path::PathBuf::from(xdg).join("apse"),
         auto_decide: args.auto_decide.as_deref().and_then(|s| {
             // validate() already rejected a bad value.
-            wlsctx::broker::parse_decision(s).ok().map(|d| match d {
-                wlsctx::broker::UserDecision::Allow => wlsctx::broker::AutoDecide::Allow,
-                wlsctx::broker::UserDecision::Deny => wlsctx::broker::AutoDecide::Deny,
+            apse::broker::parse_decision(s).ok().map(|d| match d {
+                apse::broker::UserDecision::Allow => apse::broker::AutoDecide::Allow,
+                apse::broker::UserDecision::Deny => apse::broker::AutoDecide::Deny,
             })
         }),
         timeout: Duration::from_millis(args.broker_timeout_millis),
     };
-    wlsctx::broker::run(&broker_args, listener).context("the broker event loop ended")?;
+    apse::broker::run(&broker_args, listener).context("the broker event loop ended")?;
     info!("Shutting down.");
     Ok(())
 }
@@ -392,21 +392,21 @@ fn run_broker(args: &BrokerArgs) -> Result<()> {
 fn run_decide(args: &DecideArgs) -> Result<()> {
     let xdg = std::env::var("XDG_RUNTIME_DIR").context(
         "XDG_RUNTIME_DIR must be set: the broker's decision socket \
-         lives in $XDG_RUNTIME_DIR/wlsctx",
+         lives in $XDG_RUNTIME_DIR/apse",
     )?;
     let socket = path::PathBuf::from(xdg)
-        .join("wlsctx")
-        .join(wlsctx::broker::DECISION_SOCKET);
+        .join("apse")
+        .join(apse::broker::DECISION_SOCKET);
 
     let listing = args.decision.is_none();
     let request = if listing {
-        wlsctx::broker::encode_list_request()?
+        apse::broker::encode_list_request()?
     } else {
-        let d = wlsctx::broker::parse_decision(
+        let d = apse::broker::parse_decision(
             args.decision.as_deref().expect("checked by validate()"),
         )
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-        wlsctx::broker::encode_decide_request(&d, args.prompt)?
+        apse::broker::encode_decide_request(&d, args.prompt)?
     };
     info!(
         "decide: {} on the decision socket {socket:?}",
@@ -423,13 +423,13 @@ fn run_decide(args: &DecideArgs) -> Result<()> {
              running — an --auto-decide broker never binds one?)"
         )
     })?;
-    let _ = stream.set_read_timeout(Some(wlsctx::broker::DECIDER_READ_TIMEOUT));
+    let _ = stream.set_read_timeout(Some(apse::broker::DECIDER_READ_TIMEOUT));
     stream
         .write_all(request.as_bytes())
         .context("writing to the broker decision socket failed")?;
 
     let mut line = String::new();
-    wlsctx::broker::read_line(&mut stream, &mut line)
+    apse::broker::read_line(&mut stream, &mut line)
         .context("reading the broker's reply on the decision socket failed")?;
     if line.is_empty() {
         anyhow::bail!("the broker decision socket closed without a reply");
@@ -439,9 +439,9 @@ fn run_decide(args: &DecideArgs) -> Result<()> {
     // the version and its own kind, so trying them in order
     // dispatches.
     match (
-        wlsctx::broker::decode_pending_list(&line),
-        wlsctx::broker::decode_resolution(&line),
-        wlsctx::broker::decode_error_reply(&line),
+        apse::broker::decode_pending_list(&line),
+        apse::broker::decode_resolution(&line),
+        apse::broker::decode_error_reply(&line),
     ) {
         (Ok(list), _, _) => {
             if list.prompts.is_empty() {
@@ -471,10 +471,10 @@ fn run_decide(args: &DecideArgs) -> Result<()> {
         }
         (_, _, Ok(err)) => {
             let msg = match err.reason.as_str() {
-                wlsctx::broker::REASON_NO_PENDING => {
+                apse::broker::REASON_NO_PENDING => {
                     "no pending broker prompt (it may have timed out already)"
                 }
-                wlsctx::broker::REASON_UNKNOWN_PROMPT => {
+                apse::broker::REASON_UNKNOWN_PROMPT => {
                     "unknown prompt (already resolved or expired)"
                 }
                 other => other,
@@ -495,7 +495,7 @@ fn run_decide(args: &DecideArgs) -> Result<()> {
 /// sandboxed app's session-bus address reaches the real bus through a
 /// filterable bridge.
 fn run_dbus_proxy(args: &DbusProxyArgs) -> Result<()> {
-    let mut config = wlsctx::dbus_proxy::Config {
+    let mut config = apse::dbus_proxy::Config {
         app_id: args.app_id.clone(),
         instance_id: args.instance_id.clone(),
         bus_address: args.bus_address.clone().unwrap_or_default(),
@@ -510,36 +510,36 @@ fn run_dbus_proxy(args: &DbusProxyArgs) -> Result<()> {
         ..Default::default()
     };
     for n in &args.see {
-        config.rules.push(wlsctx::dbus_proxy::Rule {
+        config.rules.push(apse::dbus_proxy::Rule {
             kind: "see",
             body: n.clone(),
         });
     }
     for n in &args.talk {
-        config.rules.push(wlsctx::dbus_proxy::Rule {
+        config.rules.push(apse::dbus_proxy::Rule {
             kind: "talk",
             body: n.clone(),
         });
     }
     for n in &args.own {
-        config.rules.push(wlsctx::dbus_proxy::Rule {
+        config.rules.push(apse::dbus_proxy::Rule {
             kind: "own",
             body: n.clone(),
         });
     }
     for n in &args.call {
-        config.rules.push(wlsctx::dbus_proxy::Rule {
+        config.rules.push(apse::dbus_proxy::Rule {
             kind: "call",
             body: n.clone(),
         });
     }
     for n in &args.broadcast {
-        config.rules.push(wlsctx::dbus_proxy::Rule {
+        config.rules.push(apse::dbus_proxy::Rule {
             kind: "broadcast",
             body: n.clone(),
         });
     }
-    wlsctx::dbus_proxy::run(config)
+    apse::dbus_proxy::run(config)
 }
 
 /// The Xwayland satellite: wrap `Xwayland` so the sandboxed app gets
@@ -547,7 +547,7 @@ fn run_dbus_proxy(args: &DbusProxyArgs) -> Result<()> {
 /// socket in the instance runtime dir via `-listenfd` and gates on
 /// its `-displayfd` display number).
 fn run_xwayland(args: &XwaylandArgs) -> Result<()> {
-    let config = wlsctx::xwayland::Config {
+    let config = apse::xwayland::Config {
         app_id: args.app_id.clone(),
         instance_id: args.instance_id.clone(),
         display: args.display,
@@ -566,7 +566,7 @@ fn run_xwayland(args: &XwaylandArgs) -> Result<()> {
             .unwrap_or_else(|| "Xwayland".into()),
         rootless: args.rootless,
     };
-    wlsctx::xwayland::run(config)
+    apse::xwayland::run(config)
 }
 
 /// A millisecond count as a short human duration (for the listing).
@@ -587,7 +587,7 @@ mod tests {
     use nix::unistd::{ForkResult, fork};
     use std::io::Write;
     use std::os::unix::process::CommandExt;
-    use wlsctx::pdeathsig::{ensure_shim, get, set};
+    use apse::pdeathsig::{ensure_shim, get, set};
 
     #[test]
     fn absent_flag_is_pass_through_not_hide_all() {

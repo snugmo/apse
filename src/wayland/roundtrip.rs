@@ -11,7 +11,7 @@ use wayland_client::{Connection, EventQueue, backend::WaylandError};
 
 /// How long to wait for the compositor to answer the security-context
 /// commit before giving up. Deliberately far below systemd's default
-/// `TimeoutStartSec` (90s), so wlsctx itself reports the reason for the
+/// `TimeoutStartSec` (90s), so apse itself reports the reason for the
 /// failure instead of being SIGKILLed by the service manager.
 pub const ROUNDTRIP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -19,7 +19,7 @@ pub const ROUNDTRIP_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// `EventQueue::roundtrip()` parks in a plain blocking read(2) until the
 /// compositor fires the sync callback: a compositor that accepts the
-/// connection and then wedges keeps wlsctx in that read until systemd's
+/// connection and then wedges keeps apse in that read until systemd's
 /// `TimeoutStartSec` SIGKILLs it, with no diagnostic. This function does
 /// the same protocol exchange (send `wl_display.sync`, wait for its
 /// `done` callback, dispatching everything in between) but bounds every

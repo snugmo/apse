@@ -1,6 +1,6 @@
 //! End-to-end tests of the transparent proxy: a fake compositor
 //! (`wayland-server`) behind the tagged socket, a real `wayland-client`
-//! in front of the public socket, with the wlsctx relay between them.
+//! in front of the public socket, with the apse relay between them.
 //!
 //! The pass-through test verifies, in order, that the relay passes
 //! through:
@@ -647,18 +647,18 @@ fn relay_passes_messages_and_fds() {
 
     // The proxy: public listener + one relay per app connection, each
     // connected to the tagged socket.
-    let public = wlsctx::proxy::bind_listener(&public_path).unwrap();
+    let public = apse::proxy::bind_listener(&public_path).unwrap();
     let tagged_for_proxy = tagged_path.clone();
     let stop_proxy = stop.clone();
     let proxy = thread::Builder::new()
-        .name("wlsctx-proxy".into())
+        .name("apse-proxy".into())
         .spawn(move || {
-            let _ = wlsctx::proxy::event_loop(
+            let _ = apse::proxy::event_loop(
                 &public,
                 &tagged_for_proxy,
-                &wlsctx::proxy::Policy::all(),
-                wlsctx::proxy::ClipboardPolicy::Allow,
-                wlsctx::proxy::AuditConfig::default(),
+                &apse::proxy::Policy::all(),
+                apse::proxy::ClipboardPolicy::Allow,
+                apse::proxy::AuditConfig::default(),
                 None,
                 Some(stop_proxy),
             );
@@ -712,18 +712,18 @@ fn allowlist_hides_globals_and_rejects_their_binds() {
     let remove_shm = Arc::new(AtomicBool::new(false));
     let shm_removed = Arc::new(AtomicBool::new(false));
 
-    let public = wlsctx::proxy::bind_listener(&public_path).unwrap();
+    let public = apse::proxy::bind_listener(&public_path).unwrap();
     let tagged_for_proxy = tagged_path.clone();
     let stop_proxy = stop.clone();
     let proxy = thread::Builder::new()
-        .name("wlsctx-proxy".into())
+        .name("apse-proxy".into())
         .spawn(move || {
-            let _ = wlsctx::proxy::event_loop(
+            let _ = apse::proxy::event_loop(
                 &public,
                 &tagged_for_proxy,
-                &wlsctx::proxy::Policy::from_csv("wl_compositor"),
-                wlsctx::proxy::ClipboardPolicy::Allow,
-                wlsctx::proxy::AuditConfig::default(),
+                &apse::proxy::Policy::from_csv("wl_compositor"),
+                apse::proxy::ClipboardPolicy::Allow,
+                apse::proxy::AuditConfig::default(),
                 None,
                 Some(stop_proxy),
             );
@@ -781,7 +781,7 @@ fn allowlist_hides_globals_and_rejects_their_binds() {
 // ------------------------------------------------------------------------
 
 /// What the app's own source serves when the compositor reads it.
-const OWN_DATA: &str = "wlsctx-own-data";
+const OWN_DATA: &str = "apse-own-data";
 /// What the foreign (host) selection serves.
 const FOREIGN_DATA: &str = "host-secret";
 
@@ -1254,8 +1254,8 @@ fn one_clipboard_session(
             rustix::fs::MemfdFlags::empty(),
         )?)
     };
-    let own_fd = memfd("wlsctx-test-own")?;
-    let foreign_fd = memfd("wlsctx-test-foreign")?;
+    let own_fd = memfd("apse-test-own")?;
+    let foreign_fd = memfd("apse-test-foreign")?;
 
     let own_received = Arc::new(AtomicBool::new(false));
     let foreign_received = Arc::new(AtomicBool::new(false));
@@ -1381,8 +1381,8 @@ fn one_clipboard_session(
 /// `policy` and `audit`, one app session) and assert the outcome for
 /// that policy.
 fn run_clipboard_session(
-    policy: wlsctx::proxy::ClipboardPolicy,
-    audit: wlsctx::proxy::AuditConfig,
+    policy: apse::proxy::ClipboardPolicy,
+    audit: apse::proxy::AuditConfig,
     settle: Duration,
     clear_selection: bool,
 ) {
@@ -1399,16 +1399,16 @@ fn run_clipboard_session(
     let live: Arc<AtomicUsize> = Arc::default();
     let received: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
 
-    let public = wlsctx::proxy::bind_listener(&public_path).unwrap();
+    let public = apse::proxy::bind_listener(&public_path).unwrap();
     let tagged_for_proxy = tagged_path.clone();
     let stop_proxy = stop.clone();
     let proxy = thread::Builder::new()
-        .name("wlsctx-proxy".into())
+        .name("apse-proxy".into())
         .spawn(move || {
-            let _ = wlsctx::proxy::event_loop(
+            let _ = apse::proxy::event_loop(
                 &public,
                 &tagged_for_proxy,
-                &wlsctx::proxy::Policy::all(),
+                &apse::proxy::Policy::all(),
                 policy,
                 audit,
                 None,
@@ -1439,7 +1439,7 @@ fn run_clipboard_session(
     let _ = proxy.join();
 
     match policy {
-        wlsctx::proxy::ClipboardPolicy::Allow => {
+        apse::proxy::ClipboardPolicy::Allow => {
             // Pass-through: both reads were served, from both origins.
             assert_eq!(own, OWN_DATA.as_bytes(), "own read-back payload");
             assert_eq!(foreign, FOREIGN_DATA.as_bytes(), "foreign payload");
@@ -1452,7 +1452,7 @@ fn run_clipboard_session(
                 "the compositor must have served both reads"
             );
         }
-        wlsctx::proxy::ClipboardPolicy::Deny => {
+        apse::proxy::ClipboardPolicy::Deny => {
             // The own read-back went through; the foreign read was
             // consumed by the gate — the compositor never saw it, and
             // the app's fd for it stayed empty (an empty clipboard
@@ -1473,8 +1473,8 @@ fn run_clipboard_session(
 #[test]
 fn clipboard_allow_is_a_passthrough() {
     run_clipboard_session(
-        wlsctx::proxy::ClipboardPolicy::Allow,
-        wlsctx::proxy::AuditConfig::default(),
+        apse::proxy::ClipboardPolicy::Allow,
+        apse::proxy::AuditConfig::default(),
         Duration::ZERO,
         false,
     );
@@ -1483,8 +1483,8 @@ fn clipboard_allow_is_a_passthrough() {
 #[test]
 fn clipboard_deny_allows_own_readback_and_drops_foreign() {
     run_clipboard_session(
-        wlsctx::proxy::ClipboardPolicy::Deny,
-        wlsctx::proxy::AuditConfig::default(),
+        apse::proxy::ClipboardPolicy::Deny,
+        apse::proxy::AuditConfig::default(),
         Duration::ZERO,
         false,
     );
@@ -1496,12 +1496,12 @@ struct CaptureSink {
     lines: Arc<Mutex<Vec<String>>>,
 }
 
-impl wlsctx::proxy::AuditSink for CaptureSink {
-    fn audit(&self, app: &str, instance: &str, record: &wlsctx::proxy::AuditRecord) {
+impl apse::proxy::AuditSink for CaptureSink {
+    fn audit(&self, app: &str, instance: &str, record: &apse::proxy::AuditRecord) {
         self.lines
             .lock()
             .unwrap()
-            .push(wlsctx::proxy::format_audit(app, instance, record));
+            .push(apse::proxy::format_audit(app, instance, record));
     }
 }
 
@@ -1514,7 +1514,7 @@ impl wlsctx::proxy::AuditSink for CaptureSink {
 #[test]
 fn clipboard_session_is_audited() {
     let lines = Arc::new(Mutex::new(Vec::new()));
-    let audit = wlsctx::proxy::AuditConfig::with_sink(
+    let audit = apse::proxy::AuditConfig::with_sink(
         "testapp".into(),
         "inst".into(),
         Arc::new(CaptureSink {
@@ -1522,7 +1522,7 @@ fn clipboard_session_is_audited() {
         }),
     );
     run_clipboard_session(
-        wlsctx::proxy::ClipboardPolicy::Allow,
+        apse::proxy::ClipboardPolicy::Allow,
         audit,
         Duration::from_millis(700),
         true,
@@ -1553,7 +1553,7 @@ fn clipboard_session_is_audited() {
 #[test]
 fn clipboard_deny_is_audited_with_a_drop() {
     let lines = Arc::new(Mutex::new(Vec::new()));
-    let audit = wlsctx::proxy::AuditConfig::with_sink(
+    let audit = apse::proxy::AuditConfig::with_sink(
         "testapp".into(),
         "inst".into(),
         Arc::new(CaptureSink {
@@ -1561,7 +1561,7 @@ fn clipboard_deny_is_audited_with_a_drop() {
         }),
     );
     run_clipboard_session(
-        wlsctx::proxy::ClipboardPolicy::Deny,
+        apse::proxy::ClipboardPolicy::Deny,
         audit,
         Duration::from_millis(700),
         true,
@@ -1958,7 +1958,7 @@ fn one_drag_session(
     public_path: &Path,
     settle: Duration,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    let own_fd = rustix::fs::memfd_create("wlsctx-test-drag", rustix::fs::MemfdFlags::empty())?;
+    let own_fd = rustix::fs::memfd_create("apse-test-drag", rustix::fs::MemfdFlags::empty())?;
 
     let served = Arc::new(AtomicBool::new(false));
 
@@ -2059,7 +2059,7 @@ fn one_drag_session(
 
 /// Run the whole three-party scenario (compositor, proxy with `audit`,
 /// one app session) for the drag and assert the outcome.
-fn run_drag_session(audit: wlsctx::proxy::AuditConfig) {
+fn run_drag_session(audit: apse::proxy::AuditConfig) {
     let _ = env_logger::Builder::new()
         .filter_level(::log::LevelFilter::Info)
         .try_init();
@@ -2072,17 +2072,17 @@ fn run_drag_session(audit: wlsctx::proxy::AuditConfig) {
     let ready = Arc::new(AtomicBool::new(false));
     let live: Arc<AtomicUsize> = Arc::default();
 
-    let public = wlsctx::proxy::bind_listener(&public_path).unwrap();
+    let public = apse::proxy::bind_listener(&public_path).unwrap();
     let tagged_for_proxy = tagged_path.clone();
     let stop_proxy = stop.clone();
     let proxy = thread::Builder::new()
-        .name("wlsctx-proxy".into())
+        .name("apse-proxy".into())
         .spawn(move || {
-            let _ = wlsctx::proxy::event_loop(
+            let _ = apse::proxy::event_loop(
                 &public,
                 &tagged_for_proxy,
-                &wlsctx::proxy::Policy::all(),
-                wlsctx::proxy::ClipboardPolicy::Allow,
+                &apse::proxy::Policy::all(),
+                apse::proxy::ClipboardPolicy::Allow,
                 audit,
                 None,
                 Some(stop_proxy),
@@ -2130,7 +2130,7 @@ fn run_drag_session(audit: wlsctx::proxy::AuditConfig) {
 #[test]
 fn drag_serve_is_audited_as_drag() {
     let lines = Arc::new(Mutex::new(Vec::new()));
-    let audit = wlsctx::proxy::AuditConfig::with_sink(
+    let audit = apse::proxy::AuditConfig::with_sink(
         "testapp".into(),
         "inst".into(),
         Arc::new(CaptureSink {
@@ -2483,8 +2483,8 @@ fn one_two_offer_session(
             rustix::fs::MemfdFlags::empty(),
         )?)
     };
-    let fd_a = memfd("wlsctx-test-fd-a")?;
-    let fd_b = memfd("wlsctx-test-fd-b")?;
+    let fd_a = memfd("apse-test-fd-a")?;
+    let fd_b = memfd("apse-test-fd-b")?;
     let acked = Arc::new(AtomicBool::new(false));
 
     let stream = UnixStream::connect(public_path)?;
@@ -2584,18 +2584,18 @@ fn two_fd_messages_in_one_datagram_keep_their_fds() {
     // The proxy: `Allow` (pure pass-through) — the gate's
     // forward/drop decision is keyed on the sender id, not the fd,
     // so the defect is visible on the forwarded path.
-    let public = wlsctx::proxy::bind_listener(&public_path).unwrap();
+    let public = apse::proxy::bind_listener(&public_path).unwrap();
     let tagged_for_proxy = tagged_path.clone();
     let stop_proxy = stop.clone();
     let proxy = thread::Builder::new()
-        .name("wlsctx-proxy".into())
+        .name("apse-proxy".into())
         .spawn(move || {
-            let _ = wlsctx::proxy::event_loop(
+            let _ = apse::proxy::event_loop(
                 &public,
                 &tagged_for_proxy,
-                &wlsctx::proxy::Policy::all(),
-                wlsctx::proxy::ClipboardPolicy::Allow,
-                wlsctx::proxy::AuditConfig::default(),
+                &apse::proxy::Policy::all(),
+                apse::proxy::ClipboardPolicy::Allow,
+                apse::proxy::AuditConfig::default(),
                 None,
                 Some(stop_proxy),
             );
@@ -3003,8 +3003,8 @@ fn one_primary_session(
             rustix::fs::MemfdFlags::empty(),
         )?)
     };
-    let own_fd = memfd("wlsctx-test-own-primary")?;
-    let foreign_fd = memfd("wlsctx-test-foreign-primary")?;
+    let own_fd = memfd("apse-test-own-primary")?;
+    let foreign_fd = memfd("apse-test-foreign-primary")?;
 
     let own_received = Arc::new(AtomicBool::new(false));
     let foreign_received = Arc::new(AtomicBool::new(false));
@@ -3099,7 +3099,7 @@ fn one_primary_session(
 
 /// Run the whole three-party primary-selection scenario (compositor,
 /// proxy with `policy`, one app session) and assert the outcome.
-fn run_primary_session(policy: wlsctx::proxy::ClipboardPolicy) {
+fn run_primary_session(policy: apse::proxy::ClipboardPolicy) {
     let _ = env_logger::Builder::new()
         .filter_level(::log::LevelFilter::Info)
         .try_init();
@@ -3113,18 +3113,18 @@ fn run_primary_session(policy: wlsctx::proxy::ClipboardPolicy) {
     let live: Arc<AtomicUsize> = Arc::default();
     let received: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
 
-    let public = wlsctx::proxy::bind_listener(&public_path).unwrap();
+    let public = apse::proxy::bind_listener(&public_path).unwrap();
     let tagged_for_proxy = tagged_path.clone();
     let stop_proxy = stop.clone();
     let proxy = thread::Builder::new()
-        .name("wlsctx-proxy".into())
+        .name("apse-proxy".into())
         .spawn(move || {
-            let _ = wlsctx::proxy::event_loop(
+            let _ = apse::proxy::event_loop(
                 &public,
                 &tagged_for_proxy,
-                &wlsctx::proxy::Policy::all(),
+                &apse::proxy::Policy::all(),
                 policy,
-                wlsctx::proxy::AuditConfig::default(),
+                apse::proxy::AuditConfig::default(),
                 None,
                 Some(stop_proxy),
             );
@@ -3149,7 +3149,7 @@ fn run_primary_session(policy: wlsctx::proxy::ClipboardPolicy) {
     let _ = proxy.join();
 
     match policy {
-        wlsctx::proxy::ClipboardPolicy::Allow => {
+        apse::proxy::ClipboardPolicy::Allow => {
             // Pass-through: both reads were served, from both origins.
             assert_eq!(own, OWN_DATA.as_bytes(), "own read-back payload");
             assert_eq!(foreign, FOREIGN_DATA.as_bytes(), "foreign payload");
@@ -3162,7 +3162,7 @@ fn run_primary_session(policy: wlsctx::proxy::ClipboardPolicy) {
                 "the compositor must have served both reads"
             );
         }
-        wlsctx::proxy::ClipboardPolicy::Deny => {
+        apse::proxy::ClipboardPolicy::Deny => {
             // The own read-back went through; the foreign read was
             // consumed by the gate — the compositor never saw it, and
             // the app's fd for it stayed empty.
@@ -3181,12 +3181,12 @@ fn run_primary_session(policy: wlsctx::proxy::ClipboardPolicy) {
 
 #[test]
 fn primary_selection_allow_is_a_passthrough() {
-    run_primary_session(wlsctx::proxy::ClipboardPolicy::Allow);
+    run_primary_session(apse::proxy::ClipboardPolicy::Allow);
 }
 
 #[test]
 fn primary_selection_deny_allows_own_readback_and_drops_foreign() {
-    run_primary_session(wlsctx::proxy::ClipboardPolicy::Deny);
+    run_primary_session(apse::proxy::ClipboardPolicy::Deny);
 }
 
 /// Phase 4: the same three-party clipboard session, but with the
@@ -3195,7 +3195,7 @@ fn primary_selection_deny_allows_own_readback_and_drops_foreign() {
 /// Phase 3 deny test only through what the broker answers:
 ///
 /// * `AutoAllow`: the *real* broker daemon's per-connection path
-///   (`wlsctx::broker::handle_connection` with `AutoDecide::Allow`)
+///   (`apse::broker::handle_connection` with `AutoDecide::Allow`)
 ///   on its own socket. The foreign read must flow end to end: the
 ///   gate drops it, the proxy asks, the allow opens the intent
 ///   window, the read is forwarded, the compositor serves it, and
@@ -3217,7 +3217,7 @@ enum BrokerOutcome {
 
 fn run_broker_session(
     outcome: BrokerOutcome,
-    audit: wlsctx::proxy::AuditConfig,
+    audit: apse::proxy::AuditConfig,
     settle: Duration,
     clear_selection: bool,
 ) {
@@ -3236,16 +3236,16 @@ fn run_broker_session(
     let received: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
     let broker_queries: Arc<AtomicUsize> = Arc::default();
 
-    let public = wlsctx::proxy::bind_listener(&public_path).unwrap();
+    let public = apse::proxy::bind_listener(&public_path).unwrap();
     let tagged_for_proxy = tagged_path.clone();
     let stop_proxy = stop.clone();
     let broker_for_proxy = broker_path.clone();
     let proxy = thread::Builder::new()
-        .name("wlsctx-proxy".into())
+        .name("apse-proxy".into())
         .spawn(move || {
             // The relay's ask to the broker: short a deadline for
             // the fail-closed test, comfortable otherwise.
-            let broker_cfg = wlsctx::proxy::BrokerConfig {
+            let broker_cfg = apse::proxy::BrokerConfig {
                 socket: broker_for_proxy,
                 app: "testapp".into(),
                 instance: "inst".into(),
@@ -3258,11 +3258,11 @@ fn run_broker_session(
                 // the Phase 6 copy-out notification has its own test.
                 notify_copy_out: false,
             };
-            let _ = wlsctx::proxy::event_loop(
+            let _ = apse::proxy::event_loop(
                 &public,
                 &tagged_for_proxy,
-                &wlsctx::proxy::Policy::all(),
-                wlsctx::proxy::ClipboardPolicy::Deny,
+                &apse::proxy::Policy::all(),
+                apse::proxy::ClipboardPolicy::Deny,
                 audit,
                 Some(broker_cfg),
                 Some(stop_proxy),
@@ -3283,7 +3283,7 @@ fn run_broker_session(
     let broker = thread::Builder::new()
         .name("broker".into())
         .spawn(move || {
-            let listener = wlsctx::broker::bind_listener(&broker_c).unwrap();
+            let listener = apse::broker::bind_listener(&broker_c).unwrap();
             // One request per session: accept it, serve it, exit.
             let (mut stream, _) = listener.accept().unwrap();
             queries_c.fetch_add(1, Ordering::SeqCst);
@@ -3294,20 +3294,20 @@ fn run_broker_session(
                     // decide, answer. (The interactive announce and
                     // decision socket are not on this path; the core
                     // is inert in auto mode.)
-                    let args = wlsctx::broker::BrokerArgs {
-                        runtime_dir: std::env::temp_dir().join("wlsctx-broker-test"),
-                        auto_decide: Some(wlsctx::broker::AutoDecide::Allow),
+                    let args = apse::broker::BrokerArgs {
+                        runtime_dir: std::env::temp_dir().join("apse-broker-test"),
+                        auto_decide: Some(apse::broker::AutoDecide::Allow),
                         timeout: Duration::from_secs(5),
                     };
-                    wlsctx::broker::handle_connection(
+                    apse::broker::handle_connection(
                         stream,
                         &args,
-                        &wlsctx::broker::BrokerCore::new(),
+                        &apse::broker::BrokerCore::new(),
                         0, // auto mode never registers a prompt; inert
                     );
                 }
                 BrokerOutcome::AutoDeny => {
-                    let line = wlsctx::broker::encode_decision(&wlsctx::broker::Decision::Deny {
+                    let line = apse::broker::encode_decision(&apse::broker::Decision::Deny {
                         reason: "auto".into(),
                     })
                     .unwrap();
@@ -3319,8 +3319,8 @@ fn run_broker_session(
                     // moot (the decision is gone over there) but
                     // proves the stand-in behaved like a slow user.
                     thread::sleep(Duration::from_secs(2));
-                    let line = wlsctx::broker::encode_decision(&wlsctx::broker::Decision::Allow {
-                        window_ms: wlsctx::broker::INTENT_WINDOW_MS,
+                    let line = apse::broker::encode_decision(&apse::broker::Decision::Allow {
+                        window_ms: apse::broker::INTENT_WINDOW_MS,
                     })
                     .unwrap();
                     let _ = stream.write_all(line.as_bytes());
@@ -3389,7 +3389,7 @@ fn run_broker_session(
 fn broker_auto_allow_opens_the_intent_window() {
     run_broker_session(
         BrokerOutcome::AutoAllow,
-        wlsctx::proxy::AuditConfig::default(),
+        apse::proxy::AuditConfig::default(),
         Duration::ZERO,
         false,
     );
@@ -3399,7 +3399,7 @@ fn broker_auto_allow_opens_the_intent_window() {
 fn broker_auto_deny_stays_dropped_and_is_consulted() {
     run_broker_session(
         BrokerOutcome::AutoDeny,
-        wlsctx::proxy::AuditConfig::default(),
+        apse::proxy::AuditConfig::default(),
         Duration::ZERO,
         false,
     );
@@ -3409,7 +3409,7 @@ fn broker_auto_deny_stays_dropped_and_is_consulted() {
 fn broker_timeout_fails_closed() {
     run_broker_session(
         BrokerOutcome::Timeout,
-        wlsctx::proxy::AuditConfig::default(),
+        apse::proxy::AuditConfig::default(),
         Duration::ZERO,
         false,
     );
@@ -3424,7 +3424,7 @@ fn broker_timeout_fails_closed() {
 #[test]
 fn broker_approval_is_audited() {
     let lines = Arc::new(Mutex::new(Vec::new()));
-    let audit = wlsctx::proxy::AuditConfig::with_sink(
+    let audit = apse::proxy::AuditConfig::with_sink(
         "testapp".into(),
         "inst".into(),
         Arc::new(CaptureSink {
@@ -3481,26 +3481,26 @@ fn run_copy_out_session(broker_reachable: bool) {
     let received: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
     let notifications: Arc<Mutex<Vec<(String, String, String)>>> = Arc::default();
 
-    let public = wlsctx::proxy::bind_listener(&public_path).unwrap();
+    let public = apse::proxy::bind_listener(&public_path).unwrap();
     let tagged_for_proxy = tagged_path.clone();
     let stop_proxy = stop.clone();
     let broker_for_proxy = broker_path.clone();
     let proxy = thread::Builder::new()
-        .name("wlsctx-proxy".into())
+        .name("apse-proxy".into())
         .spawn(move || {
-            let broker_cfg = wlsctx::proxy::BrokerConfig {
+            let broker_cfg = apse::proxy::BrokerConfig {
                 socket: broker_for_proxy,
                 app: "testapp".into(),
                 instance: "inst".into(),
                 notify_copy_out: true,
                 ..Default::default()
             };
-            let _ = wlsctx::proxy::event_loop(
+            let _ = apse::proxy::event_loop(
                 &public,
                 &tagged_for_proxy,
-                &wlsctx::proxy::Policy::all(),
-                wlsctx::proxy::ClipboardPolicy::Allow,
-                wlsctx::proxy::AuditConfig::default(),
+                &apse::proxy::Policy::all(),
+                apse::proxy::ClipboardPolicy::Allow,
+                apse::proxy::AuditConfig::default(),
                 Some(broker_cfg),
                 Some(stop_proxy),
             );
@@ -3529,7 +3529,7 @@ fn run_copy_out_session(broker_reachable: bool) {
                 thread::sleep(Duration::from_secs(1));
                 return;
             }
-            let listener = wlsctx::broker::bind_listener(&broker_c).unwrap();
+            let listener = apse::broker::bind_listener(&broker_c).unwrap();
             let _ = listener.set_nonblocking(true);
             let deadline = Instant::now() + Duration::from_secs(15);
             loop {
@@ -3537,9 +3537,9 @@ fn run_copy_out_session(broker_reachable: bool) {
                     Ok((mut stream, _)) => {
                         let _ = stream.set_nonblocking(false);
                         let mut line = String::new();
-                        if wlsctx::broker::read_line(&mut stream, &mut line).is_ok()
+                        if apse::broker::read_line(&mut stream, &mut line).is_ok()
                             && !line.is_empty()
-                            && let Ok(note) = wlsctx::broker::decode_notification(&line)
+                            && let Ok(note) = apse::broker::decode_notification(&line)
                         {
                             notifs_c.lock().unwrap().push((
                                 note.app,
@@ -3716,26 +3716,26 @@ fn run_copy_out_burst_session(broker_reachable: bool) {
     let received: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
     let notifications: Arc<Mutex<Vec<(String, String, String)>>> = Arc::default();
 
-    let public = wlsctx::proxy::bind_listener(&public_path).unwrap();
+    let public = apse::proxy::bind_listener(&public_path).unwrap();
     let tagged_for_proxy = tagged_path.clone();
     let stop_proxy = stop.clone();
     let broker_for_proxy = broker_path.clone();
     let proxy = thread::Builder::new()
-        .name("wlsctx-proxy".into())
+        .name("apse-proxy".into())
         .spawn(move || {
-            let broker_cfg = wlsctx::proxy::BrokerConfig {
+            let broker_cfg = apse::proxy::BrokerConfig {
                 socket: broker_for_proxy,
                 app: "testapp".into(),
                 instance: "inst".into(),
                 notify_copy_out: true,
                 ..Default::default()
             };
-            let _ = wlsctx::proxy::event_loop(
+            let _ = apse::proxy::event_loop(
                 &public,
                 &tagged_for_proxy,
-                &wlsctx::proxy::Policy::all(),
-                wlsctx::proxy::ClipboardPolicy::Allow,
-                wlsctx::proxy::AuditConfig::default(),
+                &apse::proxy::Policy::all(),
+                apse::proxy::ClipboardPolicy::Allow,
+                apse::proxy::AuditConfig::default(),
                 Some(broker_cfg),
                 Some(stop_proxy),
             );
@@ -3764,7 +3764,7 @@ fn run_copy_out_burst_session(broker_reachable: bool) {
                 thread::sleep(Duration::from_secs(1));
                 return;
             }
-            let listener = wlsctx::broker::bind_listener(&broker_c).unwrap();
+            let listener = apse::broker::bind_listener(&broker_c).unwrap();
             let _ = listener.set_nonblocking(true);
             let deadline = Instant::now() + Duration::from_secs(15);
             loop {
@@ -3772,9 +3772,9 @@ fn run_copy_out_burst_session(broker_reachable: bool) {
                     Ok((mut stream, _)) => {
                         let _ = stream.set_nonblocking(false);
                         let mut line = String::new();
-                        if wlsctx::broker::read_line(&mut stream, &mut line).is_ok()
+                        if apse::broker::read_line(&mut stream, &mut line).is_ok()
                             && !line.is_empty()
-                            && let Ok(note) = wlsctx::broker::decode_notification(&line)
+                            && let Ok(note) = apse::broker::decode_notification(&line)
                         {
                             notifs_c.lock().unwrap().push((
                                 note.app,

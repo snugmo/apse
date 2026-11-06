@@ -15,22 +15,22 @@
 //! How the category gets there (see `selinux/README.md`):
 //!
 //! - **S** (and the standalone proxy/satellites) narrows its *own*
-//!   label from `wlsctx_t:s0` to the instance's category (a low==high
+//!   label from `apse_t:s0` to the instance's category (a low==high
 //!   `s0-s0:cN`, which the kernel reports as the single level
 //!   `s0:cN` — range strings are canonical-form on read) by writing
 //!   its exec context (`/proc/self/attr/exec` — the setexecfilecon
-//!   equivalent; the module allows the `wlsctx_t` self-
+//!   equivalent; the module allows the `apse_t` self-
 //!   `dyntransition`) and re-execing `/proc/self/exe` once at
 //!   startup (before it binds or creates anything, so the second
 //!   pass starts clean). Every child it forks inherits the range (a
 //!   process takes its creator's full range), so the pipeline and
 //!   satellites all run at `cN`; objects created under the `s0`
 //!   parent stay `s0` (see the header note above).
-//! - **B** writes the exec context `wlsctx_app_t:<current range>`
-//!   before execing the app (module: `wlsctx_t → wlsctx_app_t`
+//! - **B** writes the exec context `apse_app_t:<current range>`
+//!   before execing the app (module: `apse_t → apse_app_t`
 //!   `dyntransition`).
 //! - The **Xwayland** and **dbus-proxy** satellites do the same for
-//!   their execs (`xserver_t` / `wlsctx_app_t`), so those *processes*
+//!   their execs (`xserver_t` / `apse_app_t`), so those *processes*
 //!   run at `cN` (the X socket, MIT auth file and bus socket they
 //!   create are `s0` — under the `s0` parent).
 //! - The **broker** (shared by all instances) narrows its range to
@@ -44,7 +44,7 @@
 //!   they stay reachable from every `cN` — no pre-creating needed.
 //!
 //! In unconfined mode (module uninstalled / binary not relabeled —
-//! the current label is not `wlsctx_t`) every function here is a
+//! the current label is not `apse_t`) every function here is a
 //! no-op and the historical behavior stands.
 
 use anyhow::{Context, Result};
@@ -90,9 +90,9 @@ fn parse_label(s: &str) -> Option<(String, String, String, String)> {
 }
 
 /// Confined mode: the current label's type is the module's
-/// `wlsctx_t` (the binary carries `wlsctx_exec_t`).
+/// `apse_t` (the binary carries `apse_exec_t`).
 pub fn is_confined() -> bool {
-    current_label().is_some_and(|l| l.2 == "wlsctx_t")
+    current_label().is_some_and(|l| l.2 == "apse_t")
 }
 
 /// Write the process' exec context (the setexecfilecon equivalent).
@@ -185,13 +185,13 @@ fn self_reexec_to_range(target: &str) -> Result<()> {
     let Some((user, role, ty, range)) = current_label() else {
         return Ok(());
     };
-    if ty != "wlsctx_t" {
+    if ty != "apse_t" {
         return Ok(()); // unconfined mode
     }
     if range == target {
         return Ok(()); // already at the target (post-re-exec invocation)
     }
-    if let Err(e) = write_exec_context(&format!("{user}:{role}:wlsctx_t:{target}")) {
+    if let Err(e) = write_exec_context(&format!("{user}:{role}:apse_t:{target}")) {
         log::warn!("{e}");
         return Ok(());
     }
@@ -201,7 +201,7 @@ fn self_reexec_to_range(target: &str) -> Result<()> {
     crate::proxy::re_exec().context("MCS re-exec (execve of /proc/self/exe) failed")
 }
 
-/// Before an exec from the `wlsctx_t` domain, set the exec context's
+/// Before an exec from the `apse_t` domain, set the exec context's
 /// *type* to `target_type` while carrying the current (instance)
 /// range — the dyntransition the module allows. No-op in unconfined
 /// mode.
@@ -209,7 +209,7 @@ pub fn set_exec_context(target_type: &str) -> Result<()> {
     let Some((user, role, ty, range)) = current_label() else {
         return Ok(());
     };
-    if ty != "wlsctx_t" {
+    if ty != "apse_t" {
         return Ok(()); // unconfined mode: keep the stock behavior
     }
     write_exec_context(&format!("{user}:{role}:{target_type}:{range}"))
@@ -228,7 +228,7 @@ pub fn preserve_range() -> Result<()> {
     let Some((user, role, ty, range)) = current_label() else {
         return Ok(());
     };
-    if ty != "wlsctx_t" {
+    if ty != "apse_t" {
         return Ok(());
     }
     // Same NUL-termination trap as `current_label`: the pending
@@ -256,22 +256,22 @@ mod tests {
     /// loops forever (the 260k-execve incident).
     #[test]
     fn parse_label_strips_nul_termination() {
-        let l = parse_label("unconfined_u:unconfined_r:wlsctx_t:s0\0").unwrap();
+        let l = parse_label("unconfined_u:unconfined_r:apse_t:s0\0").unwrap();
         assert_eq!(
             l,
             (
                 "unconfined_u".into(),
                 "unconfined_r".into(),
-                "wlsctx_t".into(),
+                "apse_t".into(),
                 "s0".into()
             )
         );
         // The canonical single-level form the kernel reports for a
         // low==high category range (post instance re-exec).
-        let l = parse_label("unconfined_u:unconfined_r:wlsctx_t:s0:c264\0").unwrap();
+        let l = parse_label("unconfined_u:unconfined_r:apse_t:s0:c264\0").unwrap();
         assert_eq!(l.3, "s0:c264");
         // A low!=high range is not collapsed; both sides are reported.
-        let l = parse_label("unconfined_u:unconfined_r:wlsctx_t:s0-s0:c0.c1023\0").unwrap();
+        let l = parse_label("unconfined_u:unconfined_r:apse_t:s0-s0:c0.c1023\0").unwrap();
         assert_eq!(l.3, "s0-s0:c0.c1023");
         // And a payload that stops carrying a NUL still parses.
         let l = parse_label("u:r:ty:s0").unwrap();

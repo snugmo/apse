@@ -1249,7 +1249,7 @@ mod tests {
         // the sole owner of the fd — a second owner would
         // double-close on drop and abort the test process with an
         // IO safety violation.
-        let path = std::env::temp_dir().join(format!("wlsctx-fdtest-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("apse-fdtest-{}", std::process::id()));
         let file = std::fs::File::create(&path).unwrap();
         let file_fd = unsafe { OwnedFd::from_raw_fd(file.into_raw_fd()) };
         let err = fd_kind(&file_fd).unwrap_err();
@@ -1322,7 +1322,7 @@ mod tests {
         // Move the File out (into_raw_fd) so the OwnedFd below is the
         // sole owner of the fd — a second owner would double-close on
         // drop and abort the test process with an IO safety violation.
-        let path = std::env::temp_dir().join(format!("wlsctx-fdtest-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("apse-fdtest-{}", std::process::id()));
         let file = std::fs::File::create(&path).unwrap();
         let file_fd = unsafe { OwnedFd::from_raw_fd(file.into_raw_fd()) };
         assert_eq!(fd_class(&file_fd), None, "a path must not be classified");

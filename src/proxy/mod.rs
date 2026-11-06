@@ -1052,7 +1052,7 @@ impl Relay {
                         ForwardAction::Forward
                     } else {
                         let what = format!(
-                            "wlsctx: bind of global {name} is blocked by the global allowlist"
+                            "apse: bind of global {name} is blocked by the global allowlist"
                         );
                         let err = Self::display_error(tables, 0 /* invalid_object */, &what)?;
                         let n = down.send(&err, &[]).map_err(RelayEnd::Io)?;
@@ -1212,7 +1212,7 @@ fn spawn_relay(
         ))
     })?;
     std::thread::Builder::new()
-        .name("wlsctx-relay".into())
+        .name("apse-relay".into())
         .spawn(move || {
             // Block the signalfd-bound mask so SIGTERM/SIGINT/SIGHUP
             // reach the main thread's signalfd, not this thread.
@@ -1323,7 +1323,7 @@ pub fn event_loop(
 /// enum stops at 31, which would silently leave the real-time range
 /// (34-64) at its default-terminate disposition, letting a same-uid
 /// process (in in-sandbox mode, the sandboxed app itself) kill
-/// wlsctx with `kill -34` and bypass the clean-shutdown path.
+/// apse with `kill -34` and bypass the clean-shutdown path.
 fn proxy_signal_mask() -> SigSet {
     let kernel_faults = [SIGFPE, SIGILL, SIGSEGV, SIGBUS, SIGABRT, SIGTRAP, SIGSYS];
     let mut mask = SigSet::all();
@@ -1367,7 +1367,7 @@ pub enum LoopEnd {
 
 /// Map one signal to the loop's action.
 ///
-/// SIGHUP asks for a **rebuild**, not an exit: wlsctx has no config
+/// SIGHUP asks for a **rebuild**, not an exit: apse has no config
 /// file to reload (everything is a CLI argument fixed at spawn), so
 /// "reload" means rebuilding the whole state — the compositor
 /// connection, the security context on the tagged listener, the

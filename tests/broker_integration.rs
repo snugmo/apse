@@ -1,5 +1,5 @@
 //! End-to-end tests of the broker's session decision socket: the
-//! real `wlsctx broker` subcommand (interactive mode) bound by a
+//! real `apse broker` subcommand (interactive mode) bound by a
 //! subprocess. These drive the *daemon's* side of the protocol with
 //! raw N-D-JSON decider sessions (the `decide` subcommand is a thin
 //! wrapper over the same lines) and the *proxy's* side with held
@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-use wlsctx::broker::{
+use apse::broker::{
     ClipboardRead, Decision, UserDecision, decode_decision, decode_error_reply,
     decode_pending_list, decode_resolution, encode_decide_request, encode_request, read_line,
 };
@@ -47,7 +47,7 @@ fn broker_socket(xdg: &Path) -> PathBuf {
 }
 
 fn decision_socket(xdg: &Path) -> PathBuf {
-    xdg.join("wlsctx").join(wlsctx::broker::DECISION_SOCKET)
+    xdg.join("apse").join(apse::broker::DECISION_SOCKET)
 }
 
 fn wait_for_file(path: &Path) {
@@ -61,13 +61,13 @@ fn wait_for_file(path: &Path) {
     }
 }
 
-/// Spawn `wlsctx broker --listen <xdg>/broker.sock` in a private
+/// Spawn `apse broker --listen <xdg>/broker.sock` in a private
 /// runtime dir; wait for both sockets (the broker's and the session
 /// decision socket, which proves interactive mode bound it).
 fn spawn_broker(xdg: &TempDir, timeout_ms: u64) -> Broker {
     let dir = xdg.path();
     std::fs::create_dir_all(dir).unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_wlsctx"))
+    let child = Command::new(env!("CARGO_BIN_EXE_apse"))
         .args([
             "broker",
             "--listen",
@@ -79,14 +79,14 @@ fn spawn_broker(xdg: &TempDir, timeout_ms: u64) -> Broker {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawning the wlsctx broker failed");
+        .expect("spawning the apse broker failed");
     wait_for_file(&broker_socket(dir));
     wait_for_file(&decision_socket(dir));
     Broker(Some(child))
 }
 
 /// One decider session on the decision socket (what
-/// `wlsctx decide` does): one request line, one reply line.
+/// `apse decide` does): one request line, one reply line.
 fn decider_request(xdg: &Path, request: &str) -> String {
     let mut stream =
         UnixStream::connect(decision_socket(xdg)).expect("connecting to the decision socket");
@@ -98,8 +98,8 @@ fn decider_request(xdg: &Path, request: &str) -> String {
     line
 }
 
-fn pending_prompts(xdg: &Path) -> Vec<wlsctx::broker::PendingPromptView> {
-    let reply = decider_request(xdg, &wlsctx::broker::encode_list_request().unwrap());
+fn pending_prompts(xdg: &Path) -> Vec<apse::broker::PendingPromptView> {
+    let reply = decider_request(xdg, &apse::broker::encode_list_request().unwrap());
     decode_pending_list(&reply)
         .expect("the list reply should decode")
         .prompts
@@ -109,8 +109,8 @@ fn pending_prompts(xdg: &Path) -> Vec<wlsctx::broker::PendingPromptView> {
 /// when its gate drops a foreign read).
 fn proxy_read_request(stream: &mut UnixStream, app: &str, instance: &str, mime: &str) {
     let req = ClipboardRead {
-        v: wlsctx::broker::PROTOCOL_VERSION,
-        kind: wlsctx::broker::REQUEST_KIND.to_string(),
+        v: apse::broker::PROTOCOL_VERSION,
+        kind: apse::broker::REQUEST_KIND.to_string(),
         app: app.into(),
         instance: instance.into(),
         mime: mime.into(),
@@ -191,7 +191,7 @@ fn multi_prompt_session_is_listed_and_decided() {
     assert_eq!(
         proxy_decision(&mut a),
         Decision::Allow {
-            window_ms: wlsctx::broker::INTENT_WINDOW_MS
+            window_ms: apse::broker::INTENT_WINDOW_MS
         }
     );
 
@@ -225,13 +225,13 @@ fn multi_prompt_session_is_listed_and_decided() {
         &encode_decide_request(&UserDecision::Allow, None).unwrap(),
     );
     let err = decode_error_reply(&reply).unwrap();
-    assert_eq!(err.reason, wlsctx::broker::REASON_NO_PENDING);
+    assert_eq!(err.reason, apse::broker::REASON_NO_PENDING);
     let reply = decider_request(
         dir,
         &encode_decide_request(&UserDecision::Allow, Some(9)).unwrap(),
     );
     let err = decode_error_reply(&reply).unwrap();
-    assert_eq!(err.reason, wlsctx::broker::REASON_UNKNOWN_PROMPT);
+    assert_eq!(err.reason, apse::broker::REASON_UNKNOWN_PROMPT);
     assert_eq!(err.prompt, Some(9));
 }
 
@@ -276,12 +276,12 @@ fn decides_before_any_prompt_are_refused() {
         &encode_decide_request(&UserDecision::Allow, None).unwrap(),
     );
     let err = decode_error_reply(&reply).unwrap();
-    assert_eq!(err.reason, wlsctx::broker::REASON_NO_PENDING);
+    assert_eq!(err.reason, apse::broker::REASON_NO_PENDING);
     let reply = decider_request(
         dir,
         &encode_decide_request(&UserDecision::Allow, Some(3)).unwrap(),
     );
     let err = decode_error_reply(&reply).unwrap();
-    assert_eq!(err.reason, wlsctx::broker::REASON_UNKNOWN_PROMPT);
+    assert_eq!(err.reason, apse::broker::REASON_UNKNOWN_PROMPT);
     assert_eq!(err.prompt, Some(3));
 }

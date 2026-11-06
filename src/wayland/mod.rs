@@ -1,9 +1,9 @@
 //! The tagged Wayland socket: everything the original single-purpose
-//! wlsctx did.
+//! apse did.
 //!
-//! `wlsctx wayland` (the original mode) wraps
+//! `apse wayland` (the original mode) wraps
 //! [`listener::obtain_listener`] + [`context::create_security_context`];
-//! the `wlsctx run` pipeline (PLAN.md Phase 5.1) creates the tagged
+//! the `apse run` pipeline (PLAN.md Phase 5.1) creates the tagged
 //! socket from the supervisor side, *before* the first fork, via
 //! [`prepare_tagged_socket`].
 
@@ -120,23 +120,23 @@ mod tests {
     #[test]
     fn resolve_defaults_to_wayland_1_in_the_runtime_dir() {
         assert_eq!(
-            resolve_socket_path("/run/user/1000/wlsctx/app-1", None),
-            "/run/user/1000/wlsctx/app-1/wayland-1"
+            resolve_socket_path("/run/user/1000/apse/app-1", None),
+            "/run/user/1000/apse/app-1/wayland-1"
         );
     }
 
     #[test]
     fn resolve_relative_listen_is_placed_in_the_runtime_dir() {
         assert_eq!(
-            resolve_socket_path("/run/user/1000/wlsctx/app-1", Some("wl-probe")),
-            "/run/user/1000/wlsctx/app-1/wl-probe"
+            resolve_socket_path("/run/user/1000/apse/app-1", Some("wl-probe")),
+            "/run/user/1000/apse/app-1/wl-probe"
         );
     }
 
     #[test]
     fn resolve_absolute_listen_is_used_as_given() {
         assert_eq!(
-            resolve_socket_path("/run/user/1000/wlsctx/app-1", Some("/elsewhere/sock")),
+            resolve_socket_path("/run/user/1000/apse/app-1", Some("/elsewhere/sock")),
             "/elsewhere/sock"
         );
     }

@@ -48,7 +48,7 @@ pub struct WaylandSpec {
 /// The per-instance identity and mode of a sandboxed run (PLAN §5).
 #[derive(Clone, Debug)]
 pub(crate) struct SandboxConfig {
-    /// Application ID: part of the hostname (`wlsctx-<app>-<inst>`)
+    /// Application ID: part of the hostname (`apse-<app>-<inst>`)
     /// and of the per-instance cgroup name.
     pub app_id: String,
     /// Instance ID: part of the hostname and cgroup name.
@@ -71,7 +71,7 @@ pub(crate) struct SandboxConfig {
 /// Topology (PLAN §3.2):
 ///
 /// ```text
-/// S (wlsctx — outside every namespace; the GPU precheck and the
+/// S (apse — outside every namespace; the GPU precheck and the
 /// per-instance runtime dir live here)
 /// ├─ A: user → mount → pid → cgroup ns; builds the rootfs; forks B;
 /// │     reaps B, exits with B's status
@@ -82,7 +82,7 @@ pub(crate) struct SandboxConfig {
 /// controlled exit (a SIGKILL, a crash): A carries
 /// pdeathsig←S(`SIGUSR1`) and kills B, and B carries
 /// pdeathsig←A — re-armed across its confined exec by the
-/// `LD_PRELOAD` shim (`wlsctx::pdeathsig`) — so no member of the
+/// `LD_PRELOAD` shim (`apse::pdeathsig`) — so no member of the
 /// lineage is left behind unsupervised.
 ///
 /// `S` (us) never enters a namespace, so the app remains a normal,
@@ -106,7 +106,7 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
     // S creates from here (instance dir, scratch, tagged socket,
     // sidecars) inherits the category. Must run before the signal
     // block below: execve resets the mask.
-    wlsctx::mcs::self_reexec_with_category(&config.app_id, &config.instance_id)?;
+    apse::mcs::self_reexec_with_category(&config.app_id, &config.instance_id)?;
     namespaces::validate_id(&config.app_id, "--app-id")?;
     namespaces::validate_id(&config.instance_id, "--instance-id")?;
     let hostname = namespaces::hostname_for(&config.app_id, &config.instance_id);
@@ -165,8 +165,8 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
     // visibility/accounting, and the instance sub-cgroup is created
     // under `S`'s current cgroup instead (see `ScopeTier::
     // Unavailable`). A run is never aborted over this.
-    let scope_unit = format!("wlsctx-{}-{}.scope", config.app_id, config.instance_id);
-    match crate::systemd::attach_scope(&scope_unit, &format!("wlsctx sandbox: {}", config.app_id)) {
+    let scope_unit = format!("apse-{}-{}.scope", config.app_id, config.instance_id);
+    match crate::systemd::attach_scope(&scope_unit, &format!("apse sandbox: {}", config.app_id)) {
         crate::systemd::ScopeTier::Joined { unit } => {
             debug!("cgroup accounting: systemd scope {unit}")
         }
@@ -197,7 +197,7 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
     std::fs::create_dir_all(&runtime_dir)
         .with_context(|| format!("creating the per-instance runtime dir {runtime_dir}"))?;
     // decision #42: the pdeathsig-restore shim (B's post-exec
-    // re-arm; see `wlsctx::pdeathsig`), built here — before any
+    // re-arm; see `apse::pdeathsig`), built here — before any
     // fork — into the instance runtime dir, which the rootfs carry
     // brings into the sandbox at `sandbox_runtime` (defined below).
     // Only in confined mode: a confined exec changes the process's
@@ -209,8 +209,8 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
     // build (or relabel) degrades to the pre-exec belt alone
     // (logged in `ensure_shim`) — an app's launch must never
     // depend on the shim existing.
-    let shim = if wlsctx::mcs::is_confined() {
-        wlsctx::pdeathsig::ensure_shim(&runtime_dir, libc::SIGUSR1)
+    let shim = if apse::mcs::is_confined() {
+        apse::pdeathsig::ensure_shim(&runtime_dir, libc::SIGUSR1)
     } else {
         None
     };
@@ -326,7 +326,7 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
             // see the shim). 7.2 `fork` resets the value to 0 (it
             // is *not* inherited), so B arms its own link itself,
             // explicitly, right before its exec.
-            if !wlsctx::pdeathsig::set(libc::SIGUSR1) {
+            if !apse::pdeathsig::set(libc::SIGUSR1) {
                 let e = std::io::Error::last_os_error();
                 error!(
                     "A: setting the pdeathsig failed: {e}; \
@@ -419,7 +419,7 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
                         userns::verify_locked(&creds)?;
                         // Phase 8.2 (MCS): carry the instance's
                         // category into the app's exec (the module's
-                        // `wlsctx_t → wlsctx_app_t` dyntransition).
+                        // `apse_t → apse_app_t` dyntransition).
                         // This must happen *before* `policy::apply`
                         // below: the openat of `/proc/self/attr/exec`
                         // would then be trapped by the seccomp-notify
@@ -427,10 +427,10 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
                         // supervisor (`/proc` is Read-only in the
                         // capability set), and denied by the Landlock
                         // floor for the same reason — the write only
-                        // works from a floor-less `wlsctx_t` process,
+                        // works from a floor-less `apse_t` process,
                         // like S's. A write failure just drops the
                         // range (logged); the exec goes on.
-                        if let Err(e) = wlsctx::mcs::set_exec_context("wlsctx_app_t") {
+                        if let Err(e) = apse::mcs::set_exec_context("apse_app_t") {
                             warn!("{e}");
                         }
                         // Phase 4: build the single capability set that
@@ -481,7 +481,7 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
                     // is an arming, not a re-arm (the belt). In
                     // confined mode the shim (the bridle) re-arms
                     // it *after* the transition: the confined exec
-                    // (`wlsctx_t` → `wlsctx_app_t`) changes the
+                    // (`apse_t` → `apse_app_t`) changes the
                     // process's SID, and `selinux_bprm_committing_creds`
                     // (`security/selinux/hooks.c:2545`, commit
                     // `4ac212ad4e8f`) *unconditionally* zeros
@@ -502,7 +502,7 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
                     // to run under it; the loader's `openat` of the
                     // `.so` is trapped and allowed (the file sits in
                     // the app's own writable runtime dir).
-                    if !wlsctx::pdeathsig::set(libc::SIGUSR1) {
+                    if !apse::pdeathsig::set(libc::SIGUSR1) {
                         let e = std::io::Error::last_os_error();
                         warn!("B: re-arming the pdeathsig failed: {e}");
                     }
@@ -883,7 +883,7 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
             // removal spares the live ones.
             remove_runtime_dir(&runtime_dir, own_tagged.as_deref());
             // 5.4: the signals S was asked to stop on override the
-            // app's status: HUP keeps the historical `wlsctx`
+            // app's status: HUP keeps the historical `apse`
             // semantics — 129 (128+SIGHUP) — and a TERM/INT that
             // reached S with no app to forward to (handoff failure)
             // is a clean shutdown (0). When the app ran, its status
@@ -1060,7 +1060,7 @@ struct AppSignalFlags {
 /// The signal-forwarder thread (Phase 5.4).
 ///
 /// S has blocked SIGTERM/SIGINT/SIGHUP on every thread of the
-/// `wlsctx` process (the S main thread before it spawned anyone,
+/// `apse` process (the S main thread before it spawned anyone,
 /// every spawned thread inherits it), so the kernel delivers them
 /// to the signalfd instead of acting on them. Each one becomes a
 /// stop request for the **app**:
@@ -1072,7 +1072,7 @@ struct AppSignalFlags {
 ///   the escalation is the actual stop. The `term` flag is set
 ///   regardless (S exits 0 when no app was running to forward to).
 /// * HUP — the same termination, plus the `hup` flag: S exits with
-///   129 (128+SIGHUP), the long-standing `wlsctx` semantics.
+///   129 (128+SIGHUP), the long-standing `apse` semantics.
 ///
 /// The thread exits when `stop` is set (the app is reaped); the
 /// signalfd closes with the thread (`O_CLOEXEC`).
@@ -1504,7 +1504,7 @@ mod tests {
             wayland: Some(WaylandSpec {
                 listen: Some("wl-probe".to_string()),
                 socket_activation: false,
-                sandbox_engine: "wlsctx-test".to_string(),
+                sandbox_engine: "apse-test".to_string(),
             }),
         }
     }
@@ -1711,7 +1711,7 @@ print('CONNECT-OK')";
         })
     }
 
-    /// Phase 5.4: a TERM to the `wlsctx` process stops the app. The
+    /// Phase 5.4: a TERM to the `apse` process stops the app. The
     /// app is PID 1 of its own pid namespace, so the courtesy TERM
     /// from outside the ns is ignored (decision #13) and the stop
     /// lands as the SIGKILL escalation — S (and this child) reports
@@ -1739,7 +1739,7 @@ print('CONNECT-OK')";
         );
     }
 
-    /// Phase 5.4: a HUP keeps the historical `wlsctx` semantics —
+    /// Phase 5.4: a HUP keeps the historical `apse` semantics —
     /// the app is killed and the process exits with 129
     /// (128+SIGHUP), no restart.
     #[test]
@@ -1748,7 +1748,7 @@ print('CONNECT-OK')";
         assert_eq!(
             code,
             Some(129),
-            "HUP must exit 129 (128+SIGHUP), the historical wlsctx \
+            "HUP must exit 129 (128+SIGHUP), the historical apse \
              semantics:\n{out}\n{err}"
         );
     }

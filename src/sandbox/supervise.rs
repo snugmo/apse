@@ -4,7 +4,7 @@
 //! B (the app) installs the *combined* seccomp-notify filter plus the
 //! Landlock floor ([`crate::sandbox::policy::apply`]), which yields a
 //! single notify-listener fd. That fd must be serviced by S (the
-//! supervisor, `wlsctx` itself) so B's trapped syscalls get a verdict,
+//! supervisor, `apse` itself) so B's trapped syscalls get a verdict,
 //! but the fd is born inside B and B's `sendmsg` is itself trapped —
 //! so B can `SCM_RIGHTS` it to no one. The handoff therefore crosses
 //! the two process boundaries without any send from B (#23):
@@ -767,7 +767,7 @@ mod tests {
     fn openat_write_denied_outside_granted_subtrees() {
         let uid = nix::unistd::getuid().as_raw();
         let config = cfg("app", "1", NetworkMode::Shared);
-        let denied = format!("/run/user/{uid}/wlsctx-p4-deny-file");
+        let denied = format!("/run/user/{uid}/apse-p4-deny-file");
         // The app writes to the instance dir's *in-sandbox* path
         // (the fresh /run's systemd-standard location, decision #28)
         // — equal to the host path for the default XDG — and the
@@ -842,7 +842,7 @@ mod tests {
     #[test]
     fn connect_to_ungranted_unix_socket_is_denied() {
         let home = std::env::home_dir().expect("the test needs $HOME");
-        let sock = home.join(".wlsctx-p4-deny.sock");
+        let sock = home.join(".apse-p4-deny.sock");
         let _ = std::fs::remove_file(&sock);
         let _listener =
             UnixListener::bind(&sock).unwrap_or_else(|e| panic!("binding {sock:?}: {e}"));

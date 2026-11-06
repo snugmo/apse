@@ -71,10 +71,10 @@ delegate_noop!(State: wp_security_context_v1::WpSecurityContextV1);
 /// keep it open for as long as the socket should stay tagged.
 ///
 /// Ownership note: per the protocol, `create_listener` transfers ownership
-/// of the listener fd to the compositor (which holds its own dup). wlsctx
+/// of the listener fd to the compositor (which holds its own dup). apse
 /// nevertheless keeps *its* copy of the fd open for the process lifetime
 /// (see `main`) and drops it only on exit, together with the reference
-/// pipe: that keeps "wlsctx is alive" equivalent to "the tagged socket is
+/// pipe: that keeps "apse is alive" equivalent to "the tagged socket is
 /// valid", and makes the tagged socket's fate visible in this process's fd
 /// table (lsof). Dropping our copy early would not unbind the socket — the
 /// compositor's copy keeps it alive — but do not "clean it up".

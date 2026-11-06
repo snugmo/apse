@@ -22,10 +22,10 @@
 //!   (`security/selinux/hooks.c:2545`, commit `4ac212ad4e8f`)
 //!   sets `current->pdeath_signal = 0` whenever the exec changes
 //!   the process's SID (`new_crsec->sid != new_crsec->osid`) —
-//!   the confined runs do (`wlsctx_t` → `wlsctx_app_t` /
+//!   the confined runs do (`apse_t` → `apse_app_t` /
 //!   `xserver_t`). No permission can prevent it (in particular,
-//!   this policy's granted `noatsecure` on the `wlsctx_t` →
-//!   `wlsctx_app_t` transition is irrelevant to it). The legacy
+//!   this policy's granted `noatsecure` on the `apse_t` →
+//!   `apse_app_t` transition is irrelevant to it). The legacy
 //!   paths coexist: a *denied* `noatsecure` check sets
 //!   `bprm->secureexec` (the `xserver_t` transition, where it is
 //!   not granted, takes it), `fs/exec.c` clears the belt on
@@ -46,10 +46,10 @@
 //!
 //!   **The `.so`'s label:** in confined mode `ensure_shim`
 //!   relabels the compiled `.so` to the module's dedicated
-//!   `wlsctx_shim_t` type (setxattr — on this kernel `filecon`
+//!   `apse_shim_t` type (setxattr — on this kernel `filecon`
 //!   does not label created inodes). A confined consumer maps it
 //!   with `PROT_EXEC`, which on 7.2 needs `file:execute`
-//!   (`file_map_prot_to_av`) — granted on `wlsctx_shim_t` by the
+//!   (`file_map_prot_to_av`) — granted on `apse_shim_t` by the
 //!   two consumer types only, and on no base-policy type an
 //!   app can read from the instance runtime dir. A failed
 //!   relabel degrades like a failed build (a warning; the
@@ -58,9 +58,9 @@
 //!   *pinned* into the cred's one-shot exec context (written to
 //!   `/proc/self/attr/exec` before the vfork of `cc`, cleared
 //!   after): the vforked child shares this cred, and the explicit
-//!   context keeps the compiler in `wlsctx_t` instead of the
-//!   module's `typetransition` dragging it into `wlsctx_app_t`
-//!   (`wlsctx_t + bin_t:process`), which lacks the `tmp_t`
+//!   context keeps the compiler in `apse_t` instead of the
+//!   module's `typetransition` dragging it into `apse_app_t`
+//!   (`apse_t + bin_t:process`), which lacks the `tmp_t`
 //!   grants for its temp files.
 //! * `PR_GET_PDEATHSIG` **writes the value to the pointer in
 //!   `arg2`** and returns 0 (or -EFAULT) — the ≤ 6.x convention of
@@ -92,7 +92,7 @@ pub(crate) fn shim_src(sig: i32) -> String {
 #define _GNU_SOURCE
 #include <signal.h>
 #include <sys/prctl.h>
-__attribute__((constructor)) static void wlsctx_restore_pdeathsig(void) {{
+__attribute__((constructor)) static void apse_restore_pdeathsig(void) {{
     prctl(PR_SET_PDEATHSIG, {sig});
 }}
 "#
@@ -109,7 +109,7 @@ __attribute__((constructor)) static void wlsctx_restore_pdeathsig(void) {{
 /// different signals must not collide on one name.
 ///
 /// In confined mode the `.so` is (re)labeled to the module's
-/// `wlsctx_shim_t` type after compilation — and on the reuse
+/// `apse_shim_t` type after compilation — and on the reuse
 /// path, when a file left by an older build does not carry it yet
 /// (see the module docs for why a confined consumer cannot map a
 /// mislabeled `.so`).
@@ -119,7 +119,7 @@ __attribute__((constructor)) static void wlsctx_restore_pdeathsig(void) {{
 /// `clear_exec_context` below): the compiler is vforked from
 /// this process and shares its cred, and the module's
 /// `typetransition` rules would otherwise carry it into
-/// `wlsctx_app_t` (see those functions for why that matters).
+/// `apse_app_t` (see those functions for why that matters).
 ///
 /// Returns the `.so` path, or `None` (with a warning) when no
 /// compiler is available (see the module docs for the
@@ -133,7 +133,7 @@ pub fn ensure_shim(dir: &str, sig: i32) -> Option<PathBuf> {
     }
     let c = dir.join(format!("pdeathsig-restore-{sig}.c"));
     if std::fs::write(&c, shim_src(sig)).is_err() {
-        eprintln!("wlsctx: warning: could not write the pdeathsig-restore shim source {c:?}");
+        eprintln!("apse: warning: could not write the pdeathsig-restore shim source {c:?}");
         return None;
     }
     pin_self_exec_context();
@@ -148,7 +148,7 @@ pub fn ensure_shim(dir: &str, sig: i32) -> Option<PathBuf> {
         Ok(s) if s.success() => true,
         _ => {
             eprintln!(
-                "wlsctx: warning: could not compile the pdeathsig-restore shim {c:?}; \
+                "apse: warning: could not compile the pdeathsig-restore shim {c:?}; \
                  a SIGKILL'd supervisor would leave its child behind"
             );
             false
@@ -167,7 +167,7 @@ pub fn ensure_shim(dir: &str, sig: i32) -> Option<PathBuf> {
 /// out of this process's *shared cred* — the `cc` below, vforked by
 /// the std `Command` — lands in **exactly this** context. The
 /// explicit context bypasses the module's `typetransition` rules
-/// (`wlsctx_t + bin_t:process` → `wlsctx_app_t` would otherwise
+/// (`apse_t + bin_t:process` → `apse_app_t` would otherwise
 /// carry the compiler into the app domain, which lacks the
 /// `tmp_t` dir/file grants for its temp files — a hard failure when
 /// the CWD is not a writable `user_tmp_t` dir, and denials even
@@ -190,8 +190,8 @@ fn pin_self_exec_context() {
     };
     if std::fs::write("/proc/self/attr/exec", &cur).is_err() {
         eprintln!(
-            "wlsctx: warning: could not pin the exec context before the shim compile \
-             ({cur:?}); the compiler may transition into wlsctx_app_t (the module's \
+            "apse: warning: could not pin the exec context before the shim compile \
+             ({cur:?}); the compiler may transition into apse_app_t (the module's \
              typetransition) and hit temp-file denials"
         );
     }
@@ -213,7 +213,7 @@ fn clear_exec_context() {
 }
 
 /// The SELinux context the shim `.so` must carry for a confined
-/// consumer to map it: the module's `wlsctx_shim_t` type at level
+/// consumer to map it: the module's `apse_shim_t` type at level
 /// `s0` (objects created in the instance dir take the parent's low
 /// level, and `s0` is dominated by every `s0:cN`, so every
 /// instance's consumers can map it).
@@ -226,7 +226,7 @@ fn shim_context() -> Option<String> {
         .next()?
         .trim()
         .to_string();
-    Some(format!("{user}:object_r:wlsctx_shim_t:s0"))
+    Some(format!("{user}:object_r:apse_shim_t:s0"))
 }
 
 fn current_label(so: &std::path::Path) -> Option<String> {
@@ -256,7 +256,7 @@ fn current_label(so: &std::path::Path) -> Option<String> {
     })
 }
 
-/// Set the shim's SELinux label to the module's `wlsctx_shim_t`
+/// Set the shim's SELinux label to the module's `apse_shim_t`
 /// (confined mode only) when it does not already carry it. A
 /// failed relabel only warns — the degradation is the documented
 /// one (a confined consumer cannot map a mislabeled `.so`, and a
@@ -289,9 +289,9 @@ fn relabel_if_needed(so: &std::path::Path) {
         Ok(p) => p,
         Err(_) => {
             eprintln!(
-                "wlsctx: warning: could not label the pdeathsig-restore shim {so:?} \
+                "apse: warning: could not label the pdeathsig-restore shim {so:?} \
                  (non-UTF-8 path); a confined consumer cannot map it \
-                 (`file:execute` is granted only on wlsctx_shim_t) — a \
+                 (`file:execute` is granted only on apse_shim_t) — a \
                  SIGKILL'd supervisor would leave its child behind"
             );
             return;
@@ -312,9 +312,9 @@ fn relabel_if_needed(so: &std::path::Path) {
     if r != 0 {
         let e = std::io::Error::last_os_error();
         eprintln!(
-            "wlsctx: warning: could not label the pdeathsig-restore shim {so:?} \
+            "apse: warning: could not label the pdeathsig-restore shim {so:?} \
              as {want:?} ({e}); a confined consumer cannot map it \
-             (`file:execute` is granted only on wlsctx_shim_t) — a \
+             (`file:execute` is granted only on apse_shim_t) — a \
              SIGKILL'd supervisor would leave its child behind"
         );
     }

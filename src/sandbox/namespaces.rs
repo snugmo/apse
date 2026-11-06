@@ -23,7 +23,7 @@
 //!   codes and 128+signal propagate reliably through the double fork),
 //!   and the kernel frees the ns object when the last member exits.
 //! * **ipc / uts**: plain unshares; UTS sets the hostname
-//!   `wlsctx-<app>-<instance>` (kernel limit 64 bytes; 65 is EINVAL —
+//!   `apse-<app>-<instance>` (kernel limit 64 bytes; 65 is EINVAL —
 //!   probed).
 //! * **cgroup** (decision #12): the cgroup2 *filesystem* is **not**
 //!   re-rooted by the cgroup namespace on this kernel — the full tree
@@ -62,9 +62,9 @@ pub(crate) enum NetworkMode {
     None,
 }
 
-/// `wlsctx-<app>-<instance>` — the UTS hostname of the instance.
+/// `apse-<app>-<instance>` — the UTS hostname of the instance.
 pub(crate) fn hostname_for(app_id: &str, instance_id: &str) -> String {
-    format!("wlsctx-{app_id}-{instance_id}")
+    format!("apse-{app_id}-{instance_id}")
 }
 
 /// `<app>-<instance>` — the name of the per-instance sub-cgroup
@@ -136,7 +136,7 @@ pub(crate) fn enter_ipcns() -> Result<()> {
 
 /// UTS namespace + the instance hostname. The kernel limit is 64
 /// bytes (65 is EINVAL — probed); the caller is responsible for
-/// keeping IDs short enough that `wlsctx-<app>-<instance>` fits.
+/// keeping IDs short enough that `apse-<app>-<instance>` fits.
 pub(crate) fn enter_utsns(hostname: &str) -> Result<()> {
     unshare(libc::CLONE_NEWUTS, "CLONE_NEWUTS")?;
     let bytes = hostname.as_bytes();
@@ -410,7 +410,7 @@ mod tests {
                 return 3;
             }
             // And a tmpfs mount works with our ns-local CAP_SYS_ADMIN.
-            let dir = std::env::temp_dir().join(format!("wlsctx-priv-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("apse-priv-{}", std::process::id()));
             if let Err(e) = std::fs::create_dir_all(&dir) {
                 let _ = writeln!(o, "FAIL creating the mount target dir {dir:?}: {e}");
                 return 4;
@@ -678,7 +678,7 @@ mod tests {
         if expect(code, &out, &err, "uts ns").is_err() {
             return;
         }
-        assert_eq!(out.trim(), "wlsctx-rustrover-work", "got:\n{out}\n{err}");
+        assert_eq!(out.trim(), "apse-rustrover-work", "got:\n{out}\n{err}");
     }
 
     #[test]

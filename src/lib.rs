@@ -1,4 +1,4 @@
-//! wlsctx: an in-process sandbox for GUI apps on a wlroots Wayland
+//! apse: an in-process sandbox for GUI apps on a wlroots Wayland
 //! desktop, plus the tagged-socket, relay, and broker that enforce
 //! per-security-context policy around it.
 //!

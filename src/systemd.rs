@@ -281,7 +281,7 @@ fn is_unit_exists(e: &zbus::Error) -> bool {
 async fn unit_task_count(conn: &Connection, unit: &str) -> Result<u64> {
     // systemd's D-Bus object-path escaping: every character outside
     // [A-Za-z0-9] becomes "_xx" (lowercase hex of the byte value) —
-    // so "wlsctx-foo.scope" → "wlsctx_2dfoo_2escope".
+    // so "apse-foo.scope" → "apse_2dfoo_2escope".
     // (unit names are ASCII, per systemd's unit-name rules)
     let escaped: String = unit
         .chars()
@@ -363,9 +363,9 @@ mod tests {
 
     #[test]
     fn attach_moves_self_and_replaces_a_stale_unit() {
-        let unit = "wlsctx-systest-scope.scope";
+        let unit = "apse-systest-scope.scope";
 
-        let tier = attach_scope(unit, "wlsctx test scope");
+        let tier = attach_scope(unit, "apse test scope");
         if !bus_available() {
             // Degraded environment: assert the documented fallback
             // tier rather than silently skipping.
@@ -387,12 +387,12 @@ mod tests {
 
         // The scope dir is user-owned: a child cgroup accepts a pid
         // (the very operation A's enter_cgroupns performs below it).
-        let child = format!("/sys/fs/cgroup{}/wlsctx-systest-child", own_cgroup());
+        let child = format!("/sys/fs/cgroup{}/apse-systest-child", own_cgroup());
         std::fs::create_dir_all(&child).expect("mkdir child cgroup in the scope");
 
         // Same unit name again: exercises UnitExists → StopUnit →
         // retry, and the scope must end up containing us still.
-        let tier2 = attach_scope(unit, "wlsctx test scope (retry)");
+        let tier2 = attach_scope(unit, "apse test scope (retry)");
         assert!(
             matches!(&tier2, ScopeTier::Joined { unit: u } if u == unit),
             "expected the retry to join {unit}, got {tier2:?}"

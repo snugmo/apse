@@ -14,7 +14,7 @@ use std::path;
 
 use anyhow::{Result, bail};
 
-/// wlsctx: run commands inside a namespaced, landlock+seccomp
+/// apse: run commands inside a namespaced, landlock+seccomp
 /// confined sandbox; tag a Wayland socket with a security context so
 /// the compositor can identify sandboxed clients (and optionally
 /// relay clients through the transparent proxy); run the clipboard
@@ -28,7 +28,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
-    /// Run a command inside the wlsctx sandbox
+    /// Run a command inside the apse sandbox
     Run(RunArgs),
     /// Set up a Wayland socket with an attached security context
     /// (or, with --proxy, relay sandboxed clients through the
@@ -98,9 +98,9 @@ impl Cli {
                         );
                     }
                 }
-                let clipboard = wlsctx::proxy::ClipboardPolicy::parse(&w.clipboard_policy)
+                let clipboard = apse::proxy::ClipboardPolicy::parse(&w.clipboard_policy)
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
-                if !w.proxy && clipboard != wlsctx::proxy::ClipboardPolicy::Allow {
+                if !w.proxy && clipboard != apse::proxy::ClipboardPolicy::Allow {
                     bail!(
                         "--clipboard-policy {} is only valid together with --proxy; \
                          the tag-and-park mode has no relay to filter",
@@ -110,12 +110,12 @@ impl Cli {
             }
             Command::Broker(b) => {
                 if let Some(s) = &b.auto_decide {
-                    wlsctx::broker::parse_decision(s).map_err(|e| anyhow::anyhow!("{e}"))?;
+                    apse::broker::parse_decision(s).map_err(|e| anyhow::anyhow!("{e}"))?;
                 }
             }
             Command::Decide(d) => {
                 if let Some(s) = &d.decision {
-                    wlsctx::broker::parse_decision(s).map_err(|e| anyhow::anyhow!("{e}"))?;
+                    apse::broker::parse_decision(s).map_err(|e| anyhow::anyhow!("{e}"))?;
                 }
             }
             Command::Run(_) => {}
@@ -129,7 +129,7 @@ impl Cli {
 #[derive(Args, Debug)]
 pub(crate) struct RunArgs {
     /// Application ID: part of the instance hostname
-    /// (`wlsctx-<app>-<instance>`) and of the per-instance cgroup
+    /// (`apse-<app>-<instance>`) and of the per-instance cgroup
     /// name (only [A-Za-z0-9._-])
     #[arg(long, default_value = "app")]
     pub(crate) app_id: String,
@@ -170,28 +170,28 @@ pub(crate) struct RunArgs {
     pub(crate) socket_activation: bool,
     /// The value the tagged socket is tagged with
     /// (`wp_security_context_v1.set_sandbox_engine`)
-    #[arg(long, default_value = "wlsctx")]
+    #[arg(long, default_value = "apse")]
     pub(crate) sandbox_engine: String,
     /// Command and its arguments, run inside the sandbox
-    /// (everything after `--`; e.g. `wlsctx run -- /bin/sh -c 'id'`)
+    /// (everything after `--`; e.g. `apse run -- /bin/sh -c 'id'`)
     #[arg(trailing_var_arg = true, required = true)]
     pub(crate) command: Vec<OsString>,
 }
 
-/// Arguments of `wlsctx wayland` (the original single-mode CLI,
+/// Arguments of `apse wayland` (the original single-mode CLI,
 /// optionally the transparent proxy).
 #[derive(Args, Debug)]
 pub(crate) struct WaylandArgs {
     /// Application ID in security context (must not be empty)
-    #[arg(long, env = "WLSCTX_APP_ID", value_parser = NonEmpty::new("app-id"))]
+    #[arg(long, env = "APSE_APP_ID", value_parser = NonEmpty::new("app-id"))]
     pub(crate) app_id: String,
     /// Instance ID in security context (must not be empty)
-    #[arg(long, env = "WLSCTX_INSTANCE_ID", value_parser = NonEmpty::new("instance-id"))]
+    #[arg(long, env = "APSE_INSTANCE_ID", value_parser = NonEmpty::new("instance-id"))]
     pub(crate) instance_id: String,
     /// Sandbox engine ID in security context (must not be empty)
     #[arg(
         long,
-        env = "WLSCTX_SANDBOX_ENGINE",
+        env = "APSE_SANDBOX_ENGINE",
         value_parser = NonEmpty::new("sandbox-engine")
     )]
     pub(crate) sandbox_engine: String,
@@ -200,7 +200,7 @@ pub(crate) struct WaylandArgs {
     /// connect to; in tag-and-park it is the tagged socket itself
     #[arg(
         long,
-        env = "WLSCTX_SOCKET_PATH",
+        env = "APSE_SOCKET_PATH",
         required_unless_present = "socket_activation"
     )]
     pub(crate) listen: Option<path::PathBuf>,
@@ -228,7 +228,7 @@ pub(crate) struct WaylandArgs {
     /// shows all globals (the Phase 1 behaviour)
     #[arg(
         long,
-        env = "WLSCTX_ALLOW_GLOBALS",
+        env = "APSE_ALLOW_GLOBALS",
         value_delimiter = ',',
         num_args = 1..,
         value_name = "INTERFACE"
@@ -246,7 +246,7 @@ pub(crate) struct WaylandArgs {
     /// clipboard data into a file
     #[arg(
         long,
-        env = "WLSCTX_CLIPBOARD_POLICY",
+        env = "APSE_CLIPBOARD_POLICY",
         default_value = "allow",
         value_name = "POLICY"
     )]
@@ -256,7 +256,7 @@ pub(crate) struct WaylandArgs {
     /// (which prompts the user on the host); an approved read opens
     /// the gate's intent window (1500 ms) and goes through. When the
     /// broker is missing or times out, the read is dropped anyway
-    #[arg(long, env = "WLSCTX_BROKER_SOCKET")]
+    #[arg(long, env = "APSE_BROKER_SOCKET")]
     pub(crate) broker_socket: Option<path::PathBuf>,
     /// (Proxy mode only) notify the host broker — a desktop
     /// notification — each time a sandboxed app writes to the clipboard
@@ -267,7 +267,7 @@ pub(crate) struct WaylandArgs {
     /// blocked or altered. Requires `--broker-socket` (the notification
     /// travels over that socket); independent of `--clipboard-policy`
     /// (a write is always forwarded)
-    #[arg(long, env = "WLSCTX_NOTIFY_COPY_OUT")]
+    #[arg(long, env = "APSE_NOTIFY_COPY_OUT")]
     pub(crate) notify_copy_out: bool,
 }
 
@@ -275,7 +275,7 @@ pub(crate) struct WaylandArgs {
 pub(crate) struct BrokerArgs {
     /// Listen on Unix socket (required unless --socket-activation is
     /// set; the proxy's --broker-socket points here)
-    #[arg(long, env = "WLSCTX_SOCKET_PATH")]
+    #[arg(long, env = "APSE_SOCKET_PATH")]
     pub(crate) listen: Option<path::PathBuf>,
     /// Receive socket via systemd socket activation (LISTEN_FDS)
     #[arg(long, conflicts_with = "listen")]
@@ -288,14 +288,14 @@ pub(crate) struct BrokerArgs {
     /// timeout is a deny)
     #[arg(
         long,
-        env = "WLSCTX_BROKER_TIMEOUT_MILLIS",
+        env = "APSE_BROKER_TIMEOUT_MILLIS",
         default_value_t = 30_000,
         value_name = "MS"
     )]
     pub(crate) broker_timeout_millis: u64,
 }
 
-/// Arguments of `wlsctx decide` (a one-shot client of the broker's
+/// Arguments of `apse decide` (a one-shot client of the broker's
 /// session decision socket).
 #[derive(Args, Debug)]
 pub(crate) struct DecideArgs {
@@ -309,7 +309,7 @@ pub(crate) struct DecideArgs {
     pub(crate) prompt: Option<u32>,
 }
 
-/// Arguments of `wlsctx dbus-proxy`: a host sidecar wrapping
+/// Arguments of `apse dbus-proxy`: a host sidecar wrapping
 /// `xdg-dbus-proxy` that bridges the session bus to the per-instance
 /// public D-Bus socket the sandboxed app points at.
 #[derive(Args, Debug)]
@@ -351,7 +351,7 @@ pub(crate) struct DbusProxyArgs {
     pub(crate) proxy_bin: Option<String>,
 }
 
-/// Arguments of `wlsctx xwayland`: a host sidecar wrapping
+/// Arguments of `apse xwayland`: a host sidecar wrapping
 /// `Xwayland` that gives the sandboxed app a per-instance X display;
 /// the app's `DISPLAY`/`XAUTHORITY` point at the instance runtime
 /// dir (the in-sandbox paths).
@@ -394,7 +394,7 @@ pub(crate) struct XwaylandArgs {
 /// IDs.
 ///
 /// Clap treats an *empty* environment variable as present-with-a-value
-/// (`WLSCTX_APP_ID=` in an environment.d file is a very common typo).
+/// (`APSE_APP_ID=` in an environment.d file is a very common typo).
 /// An empty ID would tag the socket with a context that matches no
 /// compositor policy — the security labeling silently stops working
 /// while the process looks healthy. Rejecting it at parse time fails
@@ -425,7 +425,7 @@ impl TypedValueParser for NonEmpty {
             return Err(clap::Error::raw(
                 clap::error::ErrorKind::InvalidValue,
                 format!(
-                    "--{field} (or its WLSCTX_* environment variable) must not be empty: \
+                    "--{field} (or its APSE_* environment variable) must not be empty: \
                      an empty ID would tag the socket with a context that matches no \
                      compositor policy, silently disabling the sandbox; set a non-empty value"
                 ),
@@ -438,7 +438,7 @@ impl TypedValueParser for NonEmpty {
 #[cfg(test)]
 mod tests {
     use super::{BrokerArgs, Cli, Command, DecideArgs, WaylandArgs};
-    use crate::testutil::{with_env, without_wlsctx_env};
+    use crate::testutil::{with_env, without_apse_env};
     use clap::Parser;
     use clap::error::ErrorKind;
 
@@ -468,41 +468,41 @@ mod tests {
 
     #[test]
     fn parses_explicit_arguments() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let args = parse_wayland(&[
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--app-id",
                 "rustrover",
                 "--instance-id",
                 "work",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect("explicit arguments must parse");
             assert_eq!(
                 args.listen.as_deref(),
-                Some(std::path::Path::new("/run/wlsctx/wayland-1"))
+                Some(std::path::Path::new("/run/apse/wayland-1"))
             );
             assert_eq!(args.app_id, "rustrover");
             assert_eq!(args.instance_id, "work");
-            assert_eq!(args.sandbox_engine, "wlsctx");
+            assert_eq!(args.sandbox_engine, "apse");
             assert!(!args.socket_activation);
             assert!(!args.proxy);
             assert!(args.tagged_socket.is_none());
             let cli = Cli::try_parse_from([
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--app-id",
                 "rustrover",
                 "--instance-id",
                 "work",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect("tag-and-park validates");
             cli.validate().expect("tag-and-park validates");
@@ -511,8 +511,8 @@ mod tests {
 
     #[test]
     fn requires_subcommand() {
-        without_wlsctx_env(|| {
-            let err = Cli::try_parse_from(["wlsctx"]).expect_err("a subcommand is required");
+        without_apse_env(|| {
+            let err = Cli::try_parse_from(["apse"]).expect_err("a subcommand is required");
             // Clap answers a missing (required) subcommand by showing
             // the help; the error kind reflects that.
             assert_eq!(
@@ -524,8 +524,8 @@ mod tests {
 
     #[test]
     fn unknown_subcommand_is_rejected() {
-        without_wlsctx_env(|| {
-            let err = Cli::try_parse_from(["wlsctx", "wlsctx"])
+        without_apse_env(|| {
+            let err = Cli::try_parse_from(["apse", "apse"])
                 .expect_err("unknown subcommands must be rejected");
             assert_eq!(err.kind(), ErrorKind::InvalidSubcommand);
         });
@@ -533,16 +533,16 @@ mod tests {
 
     #[test]
     fn wayland_requires_listen_without_socket_activation() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let err = parse_wayland(&[
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--app-id",
                 "a",
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect_err("--listen is required unless --socket-activation is set");
             assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
@@ -551,14 +551,14 @@ mod tests {
 
     #[test]
     fn wayland_requires_app_id_and_instance_id() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let err = parse_wayland(&[
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect_err("app_id/instance_id are always required (no fd-name fallback)");
             assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
@@ -570,19 +570,19 @@ mod tests {
 
     #[test]
     fn wayland_socket_activation_conflicts_with_listen() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let err = parse_wayland(&[
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--socket-activation",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--app-id",
                 "a",
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect_err("--socket-activation and --listen must conflict");
             assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
@@ -591,9 +591,9 @@ mod tests {
 
     #[test]
     fn wayland_socket_activation_parsing_needs_no_listen() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let args = parse_wayland(&[
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--socket-activation",
                 "--app-id",
@@ -601,7 +601,7 @@ mod tests {
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect("socket activation mode needs no --listen");
             assert!(args.socket_activation);
@@ -611,15 +611,15 @@ mod tests {
 
     #[test]
     fn wayland_socket_activation_still_requires_explicit_ids() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             // The IDs must come from --app-id/--instance-id or their
             // environment variables; nothing is derived from LISTEN_FDNAMES.
             let err = parse_wayland(&[
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--socket-activation",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect_err("socket-activation mode still requires explicit IDs");
             assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
@@ -630,20 +630,20 @@ mod tests {
     fn wayland_environment_variables_fill_required_arguments() {
         with_env(
             &[
-                ("WLSCTX_APP_ID", Some("envapp")),
-                ("WLSCTX_INSTANCE_ID", Some("envinst")),
-                ("WLSCTX_SANDBOX_ENGINE", Some("envengine")),
-                ("WLSCTX_SOCKET_PATH", Some("/run/wlsctx/wayland-1")),
+                ("APSE_APP_ID", Some("envapp")),
+                ("APSE_INSTANCE_ID", Some("envinst")),
+                ("APSE_SANDBOX_ENGINE", Some("envengine")),
+                ("APSE_SOCKET_PATH", Some("/run/apse/wayland-1")),
             ],
             || {
                 let args =
-                    parse_wayland(&["wlsctx", "wayland"]).expect("env vars satisfy all args");
+                    parse_wayland(&["apse", "wayland"]).expect("env vars satisfy all args");
                 assert_eq!(args.app_id, "envapp");
                 assert_eq!(args.instance_id, "envinst");
                 assert_eq!(args.sandbox_engine, "envengine");
                 assert_eq!(
                     args.listen.as_deref(),
-                    Some(std::path::Path::new("/run/wlsctx/wayland-1"))
+                    Some(std::path::Path::new("/run/apse/wayland-1"))
                 );
             },
         );
@@ -653,21 +653,21 @@ mod tests {
     fn wayland_explicit_arguments_take_precedence_over_env() {
         // The socket-activated deployment relied on exactly this: the
         // unit passes --listen on the command line while the IDs come
-        // from the WLSCTX_* environment, and the two sources may
+        // from the APSE_* environment, and the two sources may
         // disagree.
         with_env(
             &[
-                ("WLSCTX_APP_ID", Some("envapp")),
-                ("WLSCTX_INSTANCE_ID", Some("envinst")),
-                ("WLSCTX_SANDBOX_ENGINE", Some("envengine")),
-                ("WLSCTX_SOCKET_PATH", Some("/env/socket")),
+                ("APSE_APP_ID", Some("envapp")),
+                ("APSE_INSTANCE_ID", Some("envinst")),
+                ("APSE_SANDBOX_ENGINE", Some("envengine")),
+                ("APSE_SOCKET_PATH", Some("/env/socket")),
             ],
             || {
                 let args = parse_wayland(&[
-                    "wlsctx",
+                    "apse",
                     "wayland",
                     "--listen",
-                    "/run/wlsctx/wayland-1",
+                    "/run/apse/wayland-1",
                     "--app-id",
                     "flagapp",
                 ])
@@ -675,7 +675,7 @@ mod tests {
                 // CLI wins for the flag that was given explicitly…
                 assert_eq!(
                     args.listen.as_deref(),
-                    Some(std::path::Path::new("/run/wlsctx/wayland-1"))
+                    Some(std::path::Path::new("/run/apse/wayland-1"))
                 );
                 assert_eq!(args.app_id, "flagapp");
                 // …and env still fills the arguments that were not given.
@@ -688,12 +688,12 @@ mod tests {
 
     #[test]
     fn wayland_requires_sandbox_engine() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let err = parse_wayland(&[
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--app-id",
                 "a",
                 "--instance-id",
@@ -711,12 +711,12 @@ mod tests {
         // conflicting with itself (ArgAction::Set does not override
         // itself unless `args_override_self` is set): the second
         // --listen is an error, it never silently wins.
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let err = parse_wayland(&[
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--listen",
                 "/other/socket",
                 "--app-id",
@@ -724,7 +724,7 @@ mod tests {
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect_err("--listen must not be repeatable");
             assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
@@ -733,15 +733,15 @@ mod tests {
 
     #[test]
     fn wayland_socket_activation_conflicts_with_socket_path_env() {
-        // WLSCTX_SOCKET_PATH in the environment counts as --listen being
+        // APSE_SOCKET_PATH in the environment counts as --listen being
         // present for clap's conflict check, so a stray env var (e.g. left
         // over from a shell) makes a `--socket-activation` run refuse to
         // start instead of silently ignoring the path.
         with_env(
-            &[("WLSCTX_SOCKET_PATH", Some("/run/wlsctx/wayland-1"))],
+            &[("APSE_SOCKET_PATH", Some("/run/apse/wayland-1"))],
             || {
                 let err = parse_wayland(&[
-                    "wlsctx",
+                    "apse",
                     "wayland",
                     "--socket-activation",
                     "--app-id",
@@ -749,7 +749,7 @@ mod tests {
                     "--instance-id",
                     "i",
                     "--sandbox-engine",
-                    "wlsctx",
+                    "apse",
                 ])
                 .expect_err("--socket-activation must conflict with an env-provided --listen");
                 assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
@@ -759,32 +759,32 @@ mod tests {
 
     #[test]
     fn wayland_empty_env_values_are_rejected() {
-        // An *empty* WLSCTX_* variable is a value for clap, not "unset"
+        // An *empty* APSE_* variable is a value for clap, not "unset"
         // (a common environment.d typo). It used to be accepted, which
         // tagged the socket with an empty ID matching no compositor
         // policy and silently disabled the sandbox: each ID is now
         // rejected at parse time.
         let valid: [(&str, &str); 3] = [
-            ("WLSCTX_APP_ID", "a"),
-            ("WLSCTX_INSTANCE_ID", "i"),
-            ("WLSCTX_SANDBOX_ENGINE", "wlsctx"),
+            ("APSE_APP_ID", "a"),
+            ("APSE_INSTANCE_ID", "i"),
+            ("APSE_SANDBOX_ENGINE", "apse"),
         ];
         for (target, field) in [
-            ("WLSCTX_APP_ID", "--app-id"),
-            ("WLSCTX_INSTANCE_ID", "--instance-id"),
-            ("WLSCTX_SANDBOX_ENGINE", "--sandbox-engine"),
+            ("APSE_APP_ID", "--app-id"),
+            ("APSE_INSTANCE_ID", "--instance-id"),
+            ("APSE_SANDBOX_ENGINE", "--sandbox-engine"),
         ] {
             let pairs: Vec<(&str, Option<&str>)> = valid
                 .iter()
                 .map(|(name, value)| (*name, Some(if *name == target { "" } else { *value })))
                 .chain(std::iter::once((
-                    "WLSCTX_SOCKET_PATH",
-                    Some("/run/wlsctx/wayland-1"),
+                    "APSE_SOCKET_PATH",
+                    Some("/run/apse/wayland-1"),
                 )))
                 .collect();
             with_env(&pairs, || {
-                let err = parse_wayland(&["wlsctx", "wayland"])
-                    .expect_err("an empty WLSCTX_* value must be rejected at parse time");
+                let err = parse_wayland(&["apse", "wayland"])
+                    .expect_err("an empty APSE_* value must be rejected at parse time");
                 assert_eq!(ErrorKind::InvalidValue, err.kind(), "{target}");
                 let msg = err.to_string();
                 assert!(msg.contains(field), "{target}: {msg}");
@@ -796,15 +796,15 @@ mod tests {
     #[test]
     fn wayland_empty_flag_values_are_rejected() {
         // The same guard applies to explicit flags (`--app-id ""`).
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let fields: [(&str, &str); 3] = [
                 ("--app-id", "a"),
                 ("--instance-id", "i"),
-                ("--sandbox-engine", "wlsctx"),
+                ("--sandbox-engine", "apse"),
             ];
             for (flag, _valid) in fields {
                 let mut argv: Vec<&str> =
-                    vec!["wlsctx", "wayland", "--listen", "/run/wlsctx/wayland-1"];
+                    vec!["apse", "wayland", "--listen", "/run/apse/wayland-1"];
                 for (f, v) in fields {
                     argv.push(f);
                     argv.push(if f == flag { "" } else { v });
@@ -820,8 +820,8 @@ mod tests {
 
     #[test]
     fn run_requires_a_command() {
-        without_wlsctx_env(|| {
-            let err = Cli::try_parse_from(["wlsctx", "run"]).expect_err(
+        without_apse_env(|| {
+            let err = Cli::try_parse_from(["apse", "run"]).expect_err(
                 "`run` without a command must be rejected (a trailing arg is required)",
             );
             assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
@@ -830,8 +830,8 @@ mod tests {
 
     #[test]
     fn run_parses_the_command_after_dashes() {
-        without_wlsctx_env(|| {
-            let cli = Cli::try_parse_from(["wlsctx", "run", "--", "/bin/sh", "-c", "id"])
+        without_apse_env(|| {
+            let cli = Cli::try_parse_from(["apse", "run", "--", "/bin/sh", "-c", "id"])
                 .expect("ad-hoc run with `--` must parse");
             let Command::Run(args) = cli.command else {
                 unreachable!();
@@ -849,8 +849,8 @@ mod tests {
 
     #[test]
     fn run_parses_a_command_without_explicit_dashes() {
-        without_wlsctx_env(|| {
-            let cli = Cli::try_parse_from(["wlsctx", "run", "/usr/bin/id", "-u"])
+        without_apse_env(|| {
+            let cli = Cli::try_parse_from(["apse", "run", "/usr/bin/id", "-u"])
                 .expect("ad-hoc run without `--` must parse when all trailing values");
             let Command::Run(args) = cli.command else {
                 unreachable!();
@@ -867,10 +867,10 @@ mod tests {
 
     #[test]
     fn run_flags_after_the_command_are_values_not_flags() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             // After the command starts, `--listen` belongs to the
-            // command, not to wlsctx: the command runs with it intact.
-            let cli = Cli::try_parse_from(["wlsctx", "run", "--", "/usr/bin/sleep", "--listen"])
+            // command, not to apse: the command runs with it intact.
+            let cli = Cli::try_parse_from(["apse", "run", "--", "/usr/bin/sleep", "--listen"])
                 .expect("a flag-like token after `--` is part of the command");
             let Command::Run(args) = cli.command else {
                 unreachable!();
@@ -887,8 +887,8 @@ mod tests {
 
     #[test]
     fn run_defaults_for_identity_and_network() {
-        without_wlsctx_env(|| {
-            let cli = Cli::try_parse_from(["wlsctx", "run", "--", "/bin/sh", "-c", "id"])
+        without_apse_env(|| {
+            let cli = Cli::try_parse_from(["apse", "run", "--", "/bin/sh", "-c", "id"])
                 .expect("ad-hoc run must parse with the default identity");
             let Command::Run(args) = cli.command else {
                 unreachable!();
@@ -901,20 +901,20 @@ mod tests {
 
     #[test]
     fn run_network_rejects_unknown_modes() {
-        without_wlsctx_env(|| {
-            let err = Cli::try_parse_from(["wlsctx", "run", "--network", "veth", "--", "/bin/sh"])
+        without_apse_env(|| {
+            let err = Cli::try_parse_from(["apse", "run", "--network", "veth", "--", "/bin/sh"])
                 .expect_err("an unknown network mode must be rejected at parse time");
             assert_eq!(err.kind(), ErrorKind::InvalidValue);
         });
     }
 
     #[test]
-    fn run_rejects_wlsctx_flags_before_the_command() {
-        without_wlsctx_env(|| {
+    fn run_rejects_apse_flags_before_the_command() {
+        without_apse_env(|| {
             // A flag *before* the command (no `--` separator) that
             // `run` does not know must be rejected, not silently
             // routed into the command.
-            let err = Cli::try_parse_from(["wlsctx", "run", "--no-such-flag", "/bin/sh"])
+            let err = Cli::try_parse_from(["apse", "run", "--no-such-flag", "/bin/sh"])
                 .expect_err("an unknown flag before the command must be rejected");
             assert_eq!(err.kind(), ErrorKind::UnknownArgument);
         });
@@ -927,19 +927,19 @@ mod tests {
 
     #[test]
     fn wayland_proxy_requires_tagged_socket() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let err = parse_wayland(&[
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--proxy",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--app-id",
                 "a",
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect_err("--proxy requires --tagged-socket");
             assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
@@ -949,42 +949,42 @@ mod tests {
 
     #[test]
     fn wayland_proxy_parses_with_tagged_socket() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let args = parse_wayland(&[
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--proxy",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--tagged-socket",
-                "/run/user/1000/wlsctx-tagged",
+                "/run/user/1000/apse-tagged",
                 "--app-id",
                 "a",
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect("proxy mode with a tagged socket must parse");
             assert!(args.proxy);
             assert_eq!(
                 args.tagged_socket.as_deref(),
-                Some(std::path::Path::new("/run/user/1000/wlsctx-tagged"))
+                Some(std::path::Path::new("/run/user/1000/apse-tagged"))
             );
             let cli = Cli::try_parse_from([
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--proxy",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--tagged-socket",
-                "/run/user/1000/wlsctx-tagged",
+                "/run/user/1000/apse-tagged",
                 "--app-id",
                 "a",
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect("proxy mode validates");
             cli.validate().expect("proxy mode validates");
@@ -993,20 +993,20 @@ mod tests {
 
     #[test]
     fn wayland_notify_copy_out_requires_proxy_and_broker_socket() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             // Without --proxy.
             let cli = Cli::try_parse_from([
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--notify-copy-out",
                 "--app-id",
                 "a",
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect("clap cannot express 'only with --proxy'; validate() catches it");
             let err = cli
@@ -1017,11 +1017,11 @@ mod tests {
             // With --proxy but no --broker-socket: the notification
             // has nowhere to travel.
             let cli = Cli::try_parse_from([
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--proxy",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--tagged-socket",
                 "/tmp/t",
                 "--notify-copy-out",
@@ -1030,7 +1030,7 @@ mod tests {
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect("clap cannot express 'needs --broker-socket'; validate() catches it");
             let err = cli
@@ -1040,11 +1040,11 @@ mod tests {
 
             // With both: valid.
             let cli = Cli::try_parse_from([
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--proxy",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--tagged-socket",
                 "/tmp/t",
                 "--broker-socket",
@@ -1055,7 +1055,7 @@ mod tests {
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect("notify-copy-out with --proxy and --broker-socket must parse");
             cli.validate()
@@ -1065,13 +1065,13 @@ mod tests {
 
     #[test]
     fn wayland_clipboard_policy_defaults_to_allow_and_accepts_deny() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let base = [
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--proxy",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--tagged-socket",
                 "/tmp/t",
                 "--app-id",
@@ -1079,7 +1079,7 @@ mod tests {
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ];
             // Default.
             let args = parse_wayland(&base).expect("the default policy must parse");
@@ -1098,12 +1098,12 @@ mod tests {
 
     #[test]
     fn wayland_clipboard_policy_deny_requires_proxy() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let cli = Cli::try_parse_from([
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--clipboard-policy",
                 "deny",
                 "--app-id",
@@ -1111,7 +1111,7 @@ mod tests {
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect("clap cannot test a flag's value against another flag; validate() does");
             let err = cli
@@ -1123,13 +1123,13 @@ mod tests {
 
     #[test]
     fn wayland_invalid_clipboard_policy_is_rejected() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let cli = Cli::try_parse_from([
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--proxy",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--tagged-socket",
                 "/tmp/t",
                 "--clipboard-policy",
@@ -1139,7 +1139,7 @@ mod tests {
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect("the value is free text at parse time; validate() checks it");
             let err = cli
@@ -1151,12 +1151,12 @@ mod tests {
 
     #[test]
     fn wayland_tagged_socket_without_proxy_is_rejected() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let cli = Cli::try_parse_from([
-                "wlsctx",
+                "apse",
                 "wayland",
                 "--listen",
-                "/run/wlsctx/wayland-1",
+                "/run/apse/wayland-1",
                 "--tagged-socket",
                 "/somewhere",
                 "--app-id",
@@ -1164,7 +1164,7 @@ mod tests {
                 "--instance-id",
                 "i",
                 "--sandbox-engine",
-                "wlsctx",
+                "apse",
             ])
             .expect("clap cannot express 'only with --proxy'; validate() catches it");
             let err = cli
@@ -1182,11 +1182,11 @@ mod tests {
     fn decide_parses_without_listen() {
         // The decider is a one-shot client of the broker's decision
         // socket: it never binds one, so nothing is required at all.
-        without_wlsctx_env(|| {
-            let args = parse_decide(&["wlsctx", "decide"]).expect("decide needs no listen socket");
+        without_apse_env(|| {
+            let args = parse_decide(&["apse", "decide"]).expect("decide needs no listen socket");
             assert!(args.decision.is_none());
             assert!(args.prompt.is_none());
-            let cli = Cli::try_parse_from(["wlsctx", "decide"])
+            let cli = Cli::try_parse_from(["apse", "decide"])
                 .expect("decide mode parses without a listen socket");
             cli.validate()
                 .expect("decide mode validates without a listen socket");
@@ -1195,8 +1195,8 @@ mod tests {
 
     #[test]
     fn decide_decision_requires_a_valid_keyword() {
-        without_wlsctx_env(|| {
-            let cli = Cli::try_parse_from(["wlsctx", "decide", "--decision", "sometimes"])
+        without_apse_env(|| {
+            let cli = Cli::try_parse_from(["apse", "decide", "--decision", "sometimes"])
                 .expect("the keyword is free text at parse time; validate() checks it");
             let err = cli
                 .validate()
@@ -1204,10 +1204,10 @@ mod tests {
             assert!(err.to_string().contains("sometimes"), "{err}");
 
             for d in ["allow", "deny"] {
-                let args = parse_decide(&["wlsctx", "decide", "--decision", d])
+                let args = parse_decide(&["apse", "decide", "--decision", d])
                     .expect("a valid keyword must parse");
                 assert_eq!(args.decision.as_deref(), Some(d));
-                let cli = Cli::try_parse_from(["wlsctx", "decide", "--decision", d])
+                let cli = Cli::try_parse_from(["apse", "decide", "--decision", d])
                     .expect("a valid keyword must validate");
                 cli.validate().expect("a valid keyword must validate");
             }
@@ -1216,9 +1216,9 @@ mod tests {
 
     #[test]
     fn decide_prompt_is_an_optional_id() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let args =
-                parse_decide(&["wlsctx", "decide", "--prompt", "3"]).expect("--prompt must parse");
+                parse_decide(&["apse", "decide", "--prompt", "3"]).expect("--prompt must parse");
             assert_eq!(args.prompt, Some(3));
         });
     }
@@ -1228,13 +1228,13 @@ mod tests {
         // --listen is optional at parse time (the runtime check in
         // run_broker is the one that fails), but the conflict with
         // --socket-activation is enforced by clap.
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let err = parse_broker(&[
-                "wlsctx",
+                "apse",
                 "broker",
                 "--socket-activation",
                 "--listen",
-                "/run/user/1000/wlsctx-broker.sock",
+                "/run/user/1000/apse-broker.sock",
             ])
             .expect_err("--socket-activation and --listen must conflict");
             assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
@@ -1243,12 +1243,12 @@ mod tests {
 
     #[test]
     fn broker_auto_decide_requires_a_valid_keyword() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let cli = Cli::try_parse_from([
-                "wlsctx",
+                "apse",
                 "broker",
                 "--listen",
-                "/run/user/1000/wlsctx-broker.sock",
+                "/run/user/1000/apse-broker.sock",
                 "--auto-decide",
                 "sometimes",
             ])
@@ -1259,10 +1259,10 @@ mod tests {
             assert!(err.to_string().contains("sometimes"), "{err}");
 
             let args = parse_broker(&[
-                "wlsctx",
+                "apse",
                 "broker",
                 "--listen",
-                "/run/user/1000/wlsctx-broker.sock",
+                "/run/user/1000/apse-broker.sock",
                 "--auto-decide",
                 "allow",
                 "--broker-timeout-millis",
@@ -1272,10 +1272,10 @@ mod tests {
             assert_eq!(args.auto_decide.as_deref(), Some("allow"));
             assert_eq!(args.broker_timeout_millis, 1000);
             let cli = Cli::try_parse_from([
-                "wlsctx",
+                "apse",
                 "broker",
                 "--listen",
-                "/run/user/1000/wlsctx-broker.sock",
+                "/run/user/1000/apse-broker.sock",
                 "--auto-decide",
                 "allow",
             ])
@@ -1286,12 +1286,12 @@ mod tests {
 
     #[test]
     fn broker_timeout_defaults_to_thirty_seconds() {
-        without_wlsctx_env(|| {
+        without_apse_env(|| {
             let args = parse_broker(&[
-                "wlsctx",
+                "apse",
                 "broker",
                 "--listen",
-                "/run/user/1000/wlsctx-broker.sock",
+                "/run/user/1000/apse-broker.sock",
             ])
             .expect("the default timeout must parse");
             assert_eq!(args.broker_timeout_millis, 30_000);

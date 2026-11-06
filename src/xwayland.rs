@@ -1,6 +1,6 @@
 //! The Xwayland satellite (Phase 7.3, decision #37).
 //!
-//! `wlsctx xwayland` runs a per-instance [`Xwayland`] on the *host* —
+//! `apse xwayland` runs a per-instance [`Xwayland`] on the *host* —
 //! an ordinary Wayland client of the desktop compositor — and shares
 //! only its X socket into the sandbox through the per-instance
 //! runtime dir. The sandboxed app points at it with
@@ -148,11 +148,11 @@ fn instance_name(app_id: &str, instance_id: &str) -> String {
 }
 
 /// The per-instance runtime dir on the host
-/// (`$XDG_RUNTIME_DIR/wlsctx/<app>-<inst>`).
+/// (`$XDG_RUNTIME_DIR/apse/<app>-<inst>`).
 pub fn host_instance_dir(app_id: &str, instance_id: &str) -> String {
     let uid = nix::unistd::getuid().as_raw();
     let xdg = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{uid}"));
-    format!("{xdg}/wlsctx/{}", instance_name(app_id, instance_id))
+    format!("{xdg}/apse/{}", instance_name(app_id, instance_id))
 }
 
 /// The per-instance runtime dir's path *inside the sandbox*: the
@@ -162,7 +162,7 @@ pub fn host_instance_dir(app_id: &str, instance_id: &str) -> String {
 pub fn sandbox_instance_dir(app_id: &str, instance_id: &str) -> String {
     let uid = nix::unistd::getuid().as_raw();
     format!(
-        "/run/user/{uid}/wlsctx/{}",
+        "/run/user/{uid}/apse/{}",
         instance_name(app_id, instance_id)
     )
 }
@@ -193,7 +193,7 @@ pub fn wayland_display(cfg: &Config) -> Result<String> {
     )
 }
 
-/// Ids become directory components under `$XDG_RUNTIME_DIR/wlsctx`,
+/// Ids become directory components under `$XDG_RUNTIME_DIR/apse`,
 /// so reject anything that could climb out (mirrors `dbus-proxy`'s
 /// `validate_id`, which enforces the same charset).
 fn validate_id(value: &str, field: &str) -> Result<()> {
@@ -507,7 +507,7 @@ pub fn run(cfg: Config) -> Result<()> {
             // failure just drops the range (noted on stderr; the
             // child's stderr is inherited); the exec goes on.
             if let Err(e) = crate::mcs::set_exec_context("xserver_t") {
-                let _ = writeln!(io::stderr(), "wlsctx: {e}");
+                let _ = writeln!(io::stderr(), "apse: {e}");
             }
             let rc = libc::dup2(listen_fd, LISTEN_FD);
             if rc < 0 {
@@ -703,13 +703,13 @@ mod tests {
     #[test]
     fn instance_name_is_app_dash_instance() {
         let host = host_instance_dir("firefox", "1");
-        assert!(host.ends_with("wlsctx/firefox-1"));
+        assert!(host.ends_with("apse/firefox-1"));
         // The sandbox path is the systemd-standard location,
         // regardless of the host's XDG_RUNTIME_DIR (decision #28).
         let uid = nix::unistd::getuid().as_raw();
         assert_eq!(
             sandbox_instance_dir("firefox", "1"),
-            format!("/run/user/{uid}/wlsctx/firefox-1")
+            format!("/run/user/{uid}/apse/firefox-1")
         );
     }
 

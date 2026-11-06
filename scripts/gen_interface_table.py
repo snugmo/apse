@@ -14,10 +14,10 @@ Cargo.toml, so a version bump in the manifest is all it takes to
 regenerate against the new sources. The registry layout is overridable
 for unusual setups:
 
-    WLSCTX_CARGO_REGISTRY   root of the registry `src/` tree
+    APSE_CARGO_REGISTRY   root of the registry `src/` tree
                             (default: $CARGO_HOME or ~/.cargo, + /registry/src)
-    WLSCTX_WAYLAND_CLIENT_SRC    directory of the extracted wayland-client source
-    WLSCTX_WAYLAND_PROTOCOLS_SRC directory of the extracted wayland-protocols source
+    APSE_WAYLAND_CLIENT_SRC    directory of the extracted wayland-client source
+    APSE_WAYLAND_PROTOCOLS_SRC directory of the extracted wayland-protocols source
 
     python3 scripts/gen_interface_table.py
 """
@@ -116,16 +116,16 @@ def find_extracted_source(crate: str) -> Path:
     `registry/cache/`; the `src/` tree appears once something builds —
     CI runs `cargo check` first.)
     """
-    override = os.environ.get(f"WLSCTX_{crate.upper().replace('-', '_')}_SRC")
+    override = os.environ.get(f"APSE_{crate.upper().replace('-', '_')}_SRC")
     if override:
         p = Path(override)
         if not p.is_dir():
-            sys.exit(f"{override} (from WLSCTX_{crate.upper()}_SRC) is not a directory")
+            sys.exit(f"{override} (from APSE_{crate.upper()}_SRC) is not a directory")
         return p
 
     cargo_home = os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))
     src_root = Path(os.environ.get(
-        "WLSCTX_CARGO_REGISTRY",
+        "APSE_CARGO_REGISTRY",
         str(Path(cargo_home) / "registry" / "src"),
     ))
     version = manifest_version(crate)
@@ -142,7 +142,7 @@ def find_extracted_source(crate: str) -> Path:
             f"could not find the extracted {crate}-{version} sources under "
             f"{src_root} (looked for <index-hash>/{crate}-{version}); "
             f"run `cargo fetch --locked && cargo check` first, or point "
-            f"WLSCTX_{crate.upper()}_SRC at the source directory"
+            f"APSE_{crate.upper()}_SRC at the source directory"
         )
     print(f"using {crate} sources: {candidates[0]}", file=sys.stderr)
     return candidates[0]

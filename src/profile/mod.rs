@@ -1,5 +1,5 @@
 //! Per-app sandbox profiles (PLAN.md §5): TOML files under
-//! `~/.config/wlsctx/apps/<app-id>.toml` describing ro/rw binds,
+//! `~/.config/apse/apps/<app-id>.toml` describing ro/rw binds,
 //! masked paths, environment variables and GPU access for the
 //! in-process sandbox.
 //!
@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 /// One app's sandbox profile (the data section of
-/// `~/.config/wlsctx/apps/<app-id>.toml`).
+/// `~/.config/apse/apps/<app-id>.toml`).
 ///
 /// All path fields are absolute; `~` is not expanded (the kernel
 /// does not expand it, and profiles are data, not shell).
@@ -99,7 +99,7 @@ pub(crate) fn builtin(app_id: &str) -> Option<Profile> {
 pub(crate) fn load(app_id: &str) -> Result<Option<Profile>> {
     let home = std::env::var("HOME").context("HOME is required to locate the profile dir")?;
     let base = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{home}/.config"));
-    let path = format!("{base}/wlsctx/apps/{app_id}.toml");
+    let path = format!("{base}/apse/apps/{app_id}.toml");
     if std::path::Path::new(&path).is_file() {
         let s = std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?;
         let p: Profile = toml::from_str(&s).with_context(|| format!("parsing {path}"))?;
@@ -136,9 +136,9 @@ mod tests {
     #[test]
     fn load_reads_the_toml_file_when_present() {
         let tmp = TmpDir::new("config");
-        std::fs::create_dir_all(tmp.path().join("wlsctx/apps")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("apse/apps")).unwrap();
         std::fs::write(
-            tmp.path().join("wlsctx/apps/demo.toml"),
+            tmp.path().join("apse/apps/demo.toml"),
             "gpu = false\ntmp_size_mib = 512\nro_binds = [\"/opt/demo\"]\n\
              rw_binds = [\"/home/demo/docs\"]\nmask = [\"/private\"]\n\
              [env]\nDEMO = \"1\"\n",
@@ -187,9 +187,9 @@ mod tests {
     #[test]
     fn a_malformed_toml_is_a_hard_error() {
         let tmp = TmpDir::new("config-bad");
-        std::fs::create_dir_all(tmp.path().join("wlsctx/apps")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("apse/apps")).unwrap();
         std::fs::write(
-            tmp.path().join("wlsctx/apps/bad.toml"),
+            tmp.path().join("apse/apps/bad.toml"),
             "gpu = not-a-bool\n",
         )
         .unwrap();
@@ -209,8 +209,8 @@ mod tests {
     #[test]
     fn unknown_fields_are_rejected() {
         let tmp = TmpDir::new("config-unknown");
-        std::fs::create_dir_all(tmp.path().join("wlsctx/apps")).unwrap();
-        std::fs::write(tmp.path().join("wlsctx/apps/unk.toml"), "typos = true\n").unwrap();
+        std::fs::create_dir_all(tmp.path().join("apse/apps")).unwrap();
+        std::fs::write(tmp.path().join("apse/apps/unk.toml"), "typos = true\n").unwrap();
         with_env(
             &[(
                 "XDG_CONFIG_HOME",

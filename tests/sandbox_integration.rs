@@ -1,12 +1,12 @@
 //! Phase 8.4 — the in-process sandbox, integration-tested end to
-//! end through the real `wlsctx run` subcommand (the built binary,
+//! end through the real `apse run` subcommand (the built binary,
 //! spawned as a subprocess) with a small python3 probe as the app.
 //! The probe prints structured `KEY=VALUE` lines from inside the
 //! sandbox; the tests assert on them:
 //!
 //! * **identity** — non-root uid (locked: `setuid(0)` fails), the
 //!   single-extent `uid_map`, PID 1 of its own pid namespace, the
-//!   cgroup-namespace root `0::/`, the `wlsctx-<app>-<instance>`
+//!   cgroup-namespace root `0::/`, the `apse-<app>-<instance>`
 //!   hostname;
 //! * **the rebuilt rootfs** — fresh `/dev` (only the standard
 //!   nodes), fresh `/sys` (`/sys/fs` empty), fresh `/run` (only the
@@ -89,9 +89,9 @@ fn session_xdg() -> Option<PathBuf> {
 }
 
 /// The per-instance runtime directory as it lives **on the host**
-/// (`$XDG/wlsctx/<app>-<instance>`).
+/// (`$XDG/apse/<app>-<instance>`).
 fn host_instance_dir(inst: &str) -> Option<PathBuf> {
-    Some(session_xdg()?.join("wlsctx").join(instance_name(inst)))
+    Some(session_xdg()?.join("apse").join(instance_name(inst)))
 }
 
 /// Remove a host instance directory — pre-run hermeticity (a fresh
@@ -144,7 +144,7 @@ print("SYS_FS=" + "|".join(sorted(os.listdir("/sys/fs"))))
 print("SYS_NET=" + "|" .join(sorted(os.listdir("/sys/class/net"))))
 ru = "/run/user/%d" % os.getuid()
 print("RUN_USER=" + "|".join(sorted(os.listdir(ru))))
-inst = ru + "/wlsctx/" + os.environ["WLSCTX_TEST_INST"]
+inst = ru + "/apse/" + os.environ["APSE_TEST_INST"]
 print("RUN_INST=" + ("DIR" if os.path.isdir(inst) else "ABSENT"))
 "#;
 
@@ -155,7 +155,7 @@ import os, ctypes
 libc = ctypes.CDLL("libc.so.6", use_errno=True)
 print("SECCOMP_MODE=%d" % libc.prctl(21, 0, 0, 0, 0))
 ru = "/run/user/%d" % os.getuid()
-inst = ru + "/wlsctx/" + os.environ["WLSCTX_TEST_INST"]
+inst = ru + "/apse/" + os.environ["APSE_TEST_INST"]
 def attempt(tag, path):
     try:
         open(path, "w").close()
@@ -164,12 +164,12 @@ def attempt(tag, path):
         print(tag + "=ERR:%d" % e.errno)
 # user-owned (DAC-writable) but not in the capability set: a pure
 # Landlock write-deny target
-attempt("RUNUSER_WRITE", ru + "/wlsctx-probe-deny")
+attempt("RUNUSER_WRITE", ru + "/apse-probe-deny")
 # granted subtrees
 attempt("INST_WRITE", inst + "/probe-ok")
-attempt("TMP_WRITE", "/tmp/wlsctx-probe-tmp")
+attempt("TMP_WRITE", "/tmp/apse-probe-tmp")
 # read-granted, not write-granted
-attempt("ETC_WRITE", "/etc/wlsctx-probe-deny")
+attempt("ETC_WRITE", "/etc/apse-probe-deny")
 "#;
 
 /// The probe: the shared netns reaches a host-side listener. `IFACES`
@@ -255,7 +255,7 @@ time.sleep(60)
 "#;
 
 /// A finished probe run. The per-instance dir is left in place
-/// (`$XDG/wlsctx/<app>-<inst>`) so a test can inspect it after the
+/// (`$XDG/apse/<app>-<inst>`) so a test can inspect it after the
 /// run; each test cleans it up at the end.
 struct ProbeRun {
     code: i32,
@@ -263,7 +263,7 @@ struct ProbeRun {
     err: String,
 }
 
-/// Run `wlsctx run --app-id itest --instance-id <inst> <extra> --
+/// Run `apse run --app-id itest --instance-id <inst> <extra> --
 /// /usr/bin/python3 -c <script>` to completion (30 s deadline),
 /// against the (systemd-standard) session `$XDG_RUNTIME_DIR`: the
 /// per-instance dir is removed first, so every run starts from a
@@ -284,7 +284,7 @@ fn run_probe(
     }
     let xdg = session_xdg()?;
     clean_instance(inst);
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_wlsctx"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_apse"));
     cmd.arg("run");
     cmd.args(["--app-id", APP, "--instance-id", inst]);
     for a in extra_args {
@@ -292,7 +292,7 @@ fn run_probe(
     }
     cmd.args(["--", PYTHON, "-c", script]);
     cmd.env("XDG_RUNTIME_DIR", &xdg);
-    cmd.env("WLSCTX_TEST_INST", instance_name(inst));
+    cmd.env("APSE_TEST_INST", instance_name(inst));
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
@@ -305,7 +305,7 @@ fn run_probe(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("skipping (could not spawn the wlsctx binary: {e})");
+            eprintln!("skipping (could not spawn the apse binary: {e})");
             return None;
         }
     };
@@ -325,7 +325,7 @@ fn run_probe(
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            Err(e) => panic!("waiting on the wlsctx run failed: {e}"),
+            Err(e) => panic!("waiting on the apse run failed: {e}"),
         }
     };
     let mut out = String::new();
@@ -405,8 +405,8 @@ fn identity_is_namespaced() {
     );
     assert_eq!(
         kv(&run.out, "HOSTNAME"),
-        Some(format!("wlsctx-{APP}-it-id").as_str()),
-        "the hostname is not wlsctx-<app>-<instance> (uts namespace):\n{}",
+        Some(format!("apse-{APP}-it-id").as_str()),
+        "the hostname is not apse-<app>-<instance> (uts namespace):\n{}",
         run.out
     );
     assert!(
@@ -466,7 +466,7 @@ fn rootfs_is_rebuilt_not_masked() {
     );
     assert_eq!(
         kv(&run.out, "RUN_USER"),
-        Some("wlsctx"),
+        Some("apse"),
         "the fresh /run holds more than the per-instance tree (the host's runtime dir must be invisible):\n{}",
         run.out
     );
@@ -637,7 +637,7 @@ fn wayland_tagged_socket_is_the_only_socket() {
     );
     assert_eq!(
         kv(&run.out, "XDG"),
-        Some(format!("/run/user/{uid}/wlsctx/{inst}").as_str()),
+        Some(format!("/run/user/{uid}/apse/{inst}").as_str()),
         "the app's XDG_RUNTIME_DIR is not the in-sandbox instance dir:\n{}",
         run.out
     );
@@ -693,7 +693,7 @@ fn spawn_lifecycle(inst: &str, app: &str) -> Option<(Child, UnixDatagram, String
     let notify_path = scratch.path().join("notify.sock");
     let notify = UnixDatagram::bind(&notify_path).ok()?;
     clean_instance(inst);
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_wlsctx"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_apse"));
     cmd.args(["run", "--app-id", APP, "--instance-id", inst]);
     cmd.args(["--", PYTHON, "-c", app]);
     cmd.env("XDG_RUNTIME_DIR", &xdg);

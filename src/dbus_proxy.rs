@@ -1,6 +1,6 @@
 //! The D-Bus session-bus sidecar (Phase 7.2).
 //!
-//! `wlsctx dbus-proxy` runs a host-side [`xdg-dbus-proxy`] (the
+//! `apse dbus-proxy` runs a host-side [`xdg-dbus-proxy`] (the
 //! standalone tool the flatpak project broke out) that bridges a
 //! *public* unix socket — placed in the per-instance runtime dir, so
 //! the sandboxed app points at it with
@@ -111,11 +111,11 @@ fn instance_name(app_id: &str, instance_id: &str) -> String {
 }
 
 /// The per-instance runtime dir on the host
-/// (`$XDG_RUNTIME_DIR/wlsctx/<app>-<inst>`).
+/// (`$XDG_RUNTIME_DIR/apse/<app>-<inst>`).
 pub fn host_instance_dir(app_id: &str, instance_id: &str) -> String {
     let uid = nix::unistd::getuid().as_raw();
     let xdg = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{uid}"));
-    format!("{xdg}/wlsctx/{}", instance_name(app_id, instance_id))
+    format!("{xdg}/apse/{}", instance_name(app_id, instance_id))
 }
 
 pub fn public_socket_path(cfg: &Config) -> String {
@@ -136,7 +136,7 @@ pub fn bus_address(cfg: &Config) -> String {
     }
 }
 
-/// Ids become directory components under `$XDG_RUNTIME_DIR/wlsctx`,
+/// Ids become directory components under `$XDG_RUNTIME_DIR/apse`,
 /// so reject anything that could climb out (mirrors the sandbox's
 /// `validate_id`, which enforces the same charset for the hostname and
 /// cgroup names).
@@ -313,7 +313,7 @@ pub fn run(cfg: Config) -> Result<()> {
             Ok(_) => {
                 anyhow::bail!(
                     "{socket} is served by a live process (connect succeeded); \
-                     stop that process first (a previous wlsctx still hanging? or a \
+                     stop that process first (a previous apse still hanging? or a \
                      socket name pointing at a socket owned by another service?)"
                 )
             }
@@ -368,12 +368,12 @@ pub fn run(cfg: Config) -> Result<()> {
             nix::sys::signal::sigprocmask(SigmaskHow::SIG_SETMASK, Some(&SigSet::empty()), None)
                 .map_err(io::Error::other)?;
             // Phase 8.2 (MCS): carry the instance's category into the
-            // wlsctx_app_t exec, so the bus socket the proxy creates
+            // apse_app_t exec, so the bus socket the proxy creates
             // in the instance dir carries it. A write failure just
             // drops the range (noted on stderr; the child's stderr is
             // inherited); the exec goes on.
-            if let Err(e) = crate::mcs::set_exec_context("wlsctx_app_t") {
-                let _ = writeln!(io::stderr(), "wlsctx: {e}");
+            if let Err(e) = crate::mcs::set_exec_context("apse_app_t") {
+                let _ = writeln!(io::stderr(), "apse: {e}");
             }
             let rc = libc::dup2(child_end_fd, 3);
             if rc < 0 {
@@ -509,7 +509,7 @@ mod tests {
         let dir = host_instance_dir("firefox", "1");
         let base = dir.rsplit('/').next().unwrap();
         assert_eq!(base, "firefox-1");
-        assert!(dir.ends_with("wlsctx/firefox-1"));
+        assert!(dir.ends_with("apse/firefox-1"));
     }
 
     #[test]

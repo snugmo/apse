@@ -17,7 +17,7 @@ pub fn obtain_listener(args: &WaylandArgs) -> Result<(String, String, UnixListen
     let instance_id = args.instance_id.clone();
     if args.socket_activation {
         // The IDs come from --app-id/--instance-id (or the
-        // WLSCTX_APP_ID / WLSCTX_INSTANCE_ID environment variables). They
+        // APSE_APP_ID / APSE_INSTANCE_ID environment variables). They
         // used to be derived from the fd name, but that only worked for
         // "app@instance" instance names and the socket unit sets
         // FileDescriptorName=%i, so the name normally contains no '@' and
@@ -26,7 +26,7 @@ pub fn obtain_listener(args: &WaylandArgs) -> Result<(String, String, UnixListen
             Ok(mut it) => match it.len() {
                 0 => bail!(
                     "no socket was received via systemd socket activation (LISTEN_FDS is \
-                     not set or empty); run wlsctx through a socket unit or \
+                     not set or empty); run apse through a socket unit or \
                      use --listen instead"
                 ),
                 1 => {
@@ -40,14 +40,14 @@ pub fn obtain_listener(args: &WaylandArgs) -> Result<(String, String, UnixListen
                     Ok((app_id, instance_id, listener))
                 }
                 n => bail!(
-                    "systemd passed {n} sockets via socket activation, but wlsctx tags \
+                    "systemd passed {n} sockets via socket activation, but apse tags \
                      exactly one; remove the extra ListenStream= line(s) from the socket \
                      unit and try again"
                 ),
             },
             Err(_) => bail!(
                 "no socket was received via systemd socket activation (LISTEN_FDS is not \
-                 set or empty, or LISTEN_FDNAMES does not match LISTEN_FDS); run wlsctx \
+                 set or empty, or LISTEN_FDNAMES does not match LISTEN_FDS); run apse \
                  through a socket unit or use --listen instead"
             ),
         }
@@ -55,7 +55,7 @@ pub fn obtain_listener(args: &WaylandArgs) -> Result<(String, String, UnixListen
         let socket_path = args.listen.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "--listen is required when --socket-activation is not set \
-                 (or set WLSCTX_SOCKET_PATH)"
+                 (or set APSE_SOCKET_PATH)"
             )
         })?;
         let socket_abspath = match socket_path.is_absolute() {
@@ -83,7 +83,7 @@ pub fn obtain_listener(args: &WaylandArgs) -> Result<(String, String, UnixListen
 /// socket from the supervisor side.
 /// A socket file is *stale* only if no process holds its listener open
 /// (connect(2) then fails with ECONNREFUSED). A successful connect means
-/// the path is actively served — including a previous hung wlsctx that
+/// the path is actively served — including a previous hung apse that
 /// is still alive, or a `--listen` typo pointing at a socket owned by
 /// some other service (e.g. the compositor's own wayland-1): unlinking
 /// that would break it, so we bail instead. The probe itself creates one
@@ -119,7 +119,7 @@ pub(crate) fn bind_socket(path: &path::Path) -> Result<UnixListener> {
         Ok(meta) if meta.file_type().is_socket() => match UnixStream::connect(path) {
             Ok(_) => bail!(
                 "{path:?} is served by a live process (connect succeeded); \
-                 stop that process first (a previous wlsctx still hanging? or a \
+                 stop that process first (a previous apse still hanging? or a \
                  --listen typo pointing at a socket owned by another service, e.g. \
                  the compositor's own)"
             ),
@@ -132,7 +132,7 @@ pub(crate) fn bind_socket(path: &path::Path) -> Result<UnixListener> {
         },
         Ok(_) => bail!(
             "{path:?} already exists and is not a socket; \
-             move or delete it before starting wlsctx"
+             move or delete it before starting apse"
         ),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => bail!("stat {path:?} failed: {e}"),
@@ -164,7 +164,7 @@ mod tests {
         WaylandArgs {
             app_id: "rustrover".into(),
             instance_id: "work".into(),
-            sandbox_engine: "wlsctx".into(),
+            sandbox_engine: "apse".into(),
             listen: Some(path::PathBuf::from(listen)),
             socket_activation: false,
             proxy: false,
@@ -180,7 +180,7 @@ mod tests {
         WaylandArgs {
             app_id: "rustrover".into(),
             instance_id: "work".into(),
-            sandbox_engine: "wlsctx".into(),
+            sandbox_engine: "apse".into(),
             listen: None,
             socket_activation: true,
             proxy: false,
@@ -201,7 +201,7 @@ mod tests {
 
     /// Close a listener's fd behind the wrapper's back, leaving the
     /// socket file in place — i.e. simulate a stale socket left by a
-    /// previous wlsctx that died without unlinking it.
+    /// previous apse that died without unlinking it.
     fn leave_stale_socket(listener: UnixListener) {
         let raw = listener.as_raw_fd();
         // SAFETY: the wrapper takes over the close of `raw`, which is
@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn listen_socket_is_created_owner_only() {
         // bind(2) leaves the socket file with umask-derived permissions
-        // (typically 0755): wlsctx must tighten it to 0600 so that only
+        // (typically 0755): apse must tighten it to 0600 so that only
         // the owner can connect, even if the surrounding directory (or
         // the umask) ends up permissive.
         let dir = TmpDir::new("listen-perm");
@@ -297,7 +297,7 @@ mod tests {
     fn listen_creates_missing_parent_dir() {
         let dir = TmpDir::new("listen-parent");
         // Two missing levels: the instance dir and one above it.
-        let sock = dir.path().join("wlsctx/foot-1/wayland-1");
+        let sock = dir.path().join("apse/foot-1/wayland-1");
         with_env(&[("XDG_RUNTIME_DIR", None)], || {
             let (_, _, listener) = obtain_listener(&test_wayland_listen(sock.to_str().unwrap()))
                 .expect("a missing parent dir must be created, not an error");
@@ -312,7 +312,7 @@ mod tests {
     }
 
     /// A pre-existing parent keeps its mode (an ad-hoc `--listen`
-    /// into a dir wlsctx did not create must not be re-moded).
+    /// into a dir apse did not create must not be re-moded).
     #[test]
     fn listen_preexisting_parent_keeps_its_mode() {
         let dir = TmpDir::new("listen-parent-preexisting");
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn listen_rejects_socket_with_live_listener() {
-        // A socket whose listener fd is still open — a previous wlsctx
+        // A socket whose listener fd is still open — a previous apse
         // that is hung but not yet dead, or a --listen typo over a
         // foreign service's socket (e.g. the compositor's own) — must
         // not be unlinked: connect(2) succeeds, so the error must name
@@ -412,18 +412,18 @@ mod tests {
     #[test]
     fn listen_relative_path_placed_in_xdg_runtime_dir() {
         // Relative paths go into $XDG_RUNTIME_DIR; nested names (the
-        // standalone mode uses wlsctx/<instance>/wayland-1) create their
+        // standalone mode uses apse/<instance>/wayland-1) create their
         // subdirectories.
         let runtime = xdg_runtime_dir(0o700);
         with_env(
             &[("XDG_RUNTIME_DIR", Some(runtime.path().to_str().unwrap()))],
             || {
-                let expected = runtime.path().join("wlsctx/work/wayland-1");
+                let expected = runtime.path().join("apse/work/wayland-1");
                 let (_, _, listener) =
-                    obtain_listener(&test_wayland_listen("wlsctx/work/wayland-1"))
+                    obtain_listener(&test_wayland_listen("apse/work/wayland-1"))
                         .expect("relative path must land in the runtime dir");
                 assert_eq!(socket_path(&listener), Some(expected));
-                assert!(runtime.path().join("wlsctx/work").is_dir());
+                assert!(runtime.path().join("apse/work").is_dir());
             },
         );
     }
@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn socket_activation_without_listen_fds_fails() {
-        // No LISTEN_PID/LISTEN_FDS at all (running wlsctx by hand, not
+        // No LISTEN_PID/LISTEN_FDS at all (running apse by hand, not
         // through the socket unit): a clear error pointing at the two
         // ways to fix it.
         with_env(
@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn socket_activation_rejects_multiple_fds() {
-        // wlsctx tags exactly one socket: a unit handing over more
+        // apse tags exactly one socket: a unit handing over more
         // (extra ListenStream= lines) must fail loudly instead of
         // silently adopting the first and leaking the rest.
         let _fd_lock = LISTEN_FD_LOCK.lock().unwrap_or_else(|e| e.into_inner());

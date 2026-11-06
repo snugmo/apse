@@ -25,7 +25,7 @@ pub static LISTEN_FD_LOCK: Mutex<()> = Mutex::new(());
 
 /// Only one full-sandbox test at a time: `run_sandboxed` tests share
 /// per-instance state on the **host** (the
-/// `$XDG_RUNTIME_DIR/wlsctx/<app>-<inst>` runtime dir and its rootfs
+/// `$XDG_RUNTIME_DIR/apse/<app>-<inst>` runtime dir and its rootfs
 /// build scratch), so concurrent runs with the same instance id race
 /// on it (a supervisor's cleanup can remove another run's scratch).
 pub static SANDBOX_LOCK: Mutex<()> = Mutex::new(());
@@ -44,7 +44,7 @@ impl TmpDir {
     pub fn new(name: &str) -> Self {
         let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path =
-            std::env::temp_dir().join(format!("wlsctx-test-{}-{name}-{n}", std::process::id()));
+            std::env::temp_dir().join(format!("apse-test-{}-{name}-{n}", std::process::id()));
         fs::create_dir_all(&path).unwrap_or_else(|e| panic!("creating {path:?}: {e}"));
         Self { path }
     }
@@ -125,18 +125,18 @@ impl Drop for EnvGuard<'_> {
     }
 }
 
-pub fn without_wlsctx_env(f: impl FnOnce()) {
+pub fn without_apse_env(f: impl FnOnce()) {
     with_env(
         &[
-            ("WLSCTX_APP_ID", None),
-            ("WLSCTX_INSTANCE_ID", None),
-            ("WLSCTX_SANDBOX_ENGINE", None),
-            ("WLSCTX_SOCKET_PATH", None),
-            ("WLSCTX_ALLOW_GLOBALS", None),
-            ("WLSCTX_CLIPBOARD_POLICY", None),
-            ("WLSCTX_BROKER_SOCKET", None),
-            ("WLSCTX_NOTIFY_COPY_OUT", None),
-            ("WLSCTX_BROKER_TIMEOUT_MILLIS", None),
+            ("APSE_APP_ID", None),
+            ("APSE_INSTANCE_ID", None),
+            ("APSE_SANDBOX_ENGINE", None),
+            ("APSE_SOCKET_PATH", None),
+            ("APSE_ALLOW_GLOBALS", None),
+            ("APSE_CLIPBOARD_POLICY", None),
+            ("APSE_BROKER_SOCKET", None),
+            ("APSE_NOTIFY_COPY_OUT", None),
+            ("APSE_BROKER_TIMEOUT_MILLIS", None),
         ],
         f,
     );

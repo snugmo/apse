@@ -78,7 +78,7 @@ impl Credentials {
 /// namespace or mount work.
 pub(crate) fn enter_userns(creds: &Credentials) -> Result<()> {
     // A new user namespace for this process (and its future forks)
-    // only; the caller is a forked child, so wlsctx itself stays
+    // only; the caller is a forked child, so apse itself stays
     // outside (PLAN.md §3.2).
     if unsafe { libc::unshare(libc::CLONE_NEWUSER) } != 0 {
         return Err(io::Error::last_os_error()).context(
@@ -620,7 +620,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// End-to-end: `wlsctx run -- id` executes the command in the new
+    /// End-to-end: `apse run -- id` executes the command in the new
     /// user namespace and the command sees the *real* uid/gid.
     #[test]
     fn run_sandboxed_command_sees_the_real_uid() {
