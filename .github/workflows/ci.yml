@@ -21,6 +21,17 @@
 #
 # 3. the usual gates: rustfmt, clippy (deny warnings), the test suite.
 #
+# The test step needs one environment tweak first: Ubuntu 24.04+
+# (the `ubuntu-latest` runner is 26.04) enables
+# kernel.apparmor_restrict_unprivileged_userns=1 by default, which
+# lets an unprivileged process create a user namespace but denies
+# its setgroups write — the sandbox cannot map its uid/gid.
+# Without the tweak the 14 hard-asserting sandbox tests fail; with
+# the new probe-and-skip guards they would skip cleanly instead,
+# but a silently skipped sandbox suite makes this CI meaningless,
+# so we enable the namespaces on the runner rather than accept the
+# skip.
+#
 # Runs on pushes to main only (no other branches, no pull requests):
 # this is a single-developer repo, so the main push is the merge
 # point and the gate for it.
@@ -35,7 +46,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -56,6 +67,16 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Enable unprivileged user namespaces for the sandbox tests
+        # Ubuntu's AppArmor restriction (on by default since 24.04)
+        # denies the setgroups write of a fresh unprivileged userns,
+        # which the sandbox's single-extent uid/gid map needs. Hard
+        # on purpose: if a future runner image ever drops this sysctl,
+        # we want a loud red build, not a silently skipped sandbox
+        # suite. (The tests themselves also probe and skip when the
+        # environment refuses, for non-Ubuntu machines.)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Test
         # Single-threaded on purpose: several tests mutate the process
