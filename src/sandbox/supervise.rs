@@ -765,6 +765,10 @@ mod tests {
     /// the bind mount.
     #[test]
     fn openat_write_denied_outside_granted_subtrees() {
+        if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         let uid = nix::unistd::getuid().as_raw();
         let config = cfg("app", "1", NetworkMode::Shared);
         let denied = format!("/run/user/{uid}/apse-p4-deny-file");
@@ -817,6 +821,10 @@ mod tests {
     /// on this host, which would make any content assertion vacuous.
     #[test]
     fn openat_read_of_granted_path_is_allowed() {
+        if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         let (code, out, err) = run_cmd(
             &["/bin/sh".into(), "-c".into(), "cat /etc/os-release".into()],
             &cfg("app", "4", NetworkMode::Shared),
@@ -841,6 +849,10 @@ mod tests {
     /// by the supervisor with EACCES.
     #[test]
     fn connect_to_ungranted_unix_socket_is_denied() {
+        if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         let home = std::env::home_dir().expect("the test needs $HOME");
         let sock = home.join(".apse-p4-deny.sock");
         let _ = std::fs::remove_file(&sock);
@@ -886,6 +898,10 @@ mod tests {
     /// listener's, carried by the instance dir's bind mount.
     #[test]
     fn connect_to_instance_dir_socket_is_allowed() {
+        if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         let config = cfg("app", "3", NetworkMode::Shared);
         let inst = mounts::instance_runtime_dir(&config);
         std::fs::create_dir_all(&inst).unwrap_or_else(|e| panic!("creating {inst:?}: {e}"));

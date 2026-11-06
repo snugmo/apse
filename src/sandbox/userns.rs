@@ -429,6 +429,60 @@ pub(crate) mod tests {
         }
     }
 
+    /// Can this environment actually *use* an unprivileged user
+    /// namespace (create one and write its setgroups/uid/gid maps)?
+    ///
+    /// Probed **once** in a throwaway forked child (the test process
+    /// itself is never unshared) running the same `enter_userns`
+    /// sequence the sandbox uses, classified by [`enter_or_classify`]:
+    /// code `0` (entered and mapped cleanly) means supported; code
+    /// `1` (the kernel/LSM could not create or map the ns — e.g.
+    /// Ubuntu 24.04+/26.04's AppArmor restriction denies the
+    /// setgroups write *after* a successful `unshare`) means not
+    /// supported, so the sandbox tests must `return` rather than
+    /// fail; code `20` (the ns was created but the kernel rejected
+    /// our single-extent map) means *supported* — that is a real
+    /// design failure the tests must surface, not an environment
+    /// skip.
+    ///
+    /// The split is the whole point: "the sandbox is broken here"
+    /// (fail loudly) vs. "this machine simply will not grant us an
+    /// unprivileged userns" (skip cleanly, without one panicking test
+    /// poisoning `SANDBOX_LOCK` and cascading into the rest).
+    pub(crate) fn unprivileged_userns_supported() -> bool {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static PROBE_DONE: AtomicBool = AtomicBool::new(false);
+        static PROBE_OK: AtomicBool = AtomicBool::new(false);
+        if PROBE_DONE.load(Ordering::SeqCst) {
+            return PROBE_OK.load(Ordering::SeqCst);
+        }
+
+        // The forked child never calls back into this function, so no
+        // lock is held across the fork (the same invariant that makes
+        // `run_in_child` itself safe).
+        let (code, out, _err) = run_in_child(|o| match creds() {
+            Ok(c) => enter_or_classify(o, &c),
+            Err(e) => {
+                let _ = writeln!(o, "unpriv-userns probe: {e:#}");
+                1
+            }
+        });
+        let ok = matches!(code, Some(0) | Some(20));
+        PROBE_OK.store(ok, Ordering::SeqCst);
+        PROBE_DONE.store(true, Ordering::SeqCst);
+        if !ok {
+            eprintln!(
+                "NOTE: this environment cannot use unprivileged user namespaces \
+                 (a fresh userns was created but its setgroups/uid_map write was \
+                 denied):\n{out}\n      The sandbox tests will skip. On Ubuntu \
+                 24.04+ (including the GitHub ubuntu runner), enable them with:\n      \
+                 sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"
+            );
+        }
+        ok
+    }
+
     #[test]
     fn enter_then_verify_credential_sequence() {
         let creds = match creds() {
@@ -624,6 +678,10 @@ pub(crate) mod tests {
     /// user namespace and the command sees the *real* uid/gid.
     #[test]
     fn run_sandboxed_command_sees_the_real_uid() {
+        if !unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         let _lock = crate::testutil::SANDBOX_LOCK
             .lock()
             .unwrap_or_else(|e| panic!("SANDBOX_LOCK poisoned: {e}"));

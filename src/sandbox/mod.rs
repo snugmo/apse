@@ -1529,6 +1529,10 @@ mod tests {
     /// run exits non-zero — an honest failure, not a skip.
     #[test]
     fn tagged_socket_is_carried_reachable_and_untagged() {
+        if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         // The test relies on the session's real XDG/WAYLAND
         // environment; serialise against env-mutating tests and
         // against other full-sandbox runs (per-instance host state).
@@ -1718,6 +1722,10 @@ print('CONNECT-OK')";
     /// 128+9. The per-instance runtime dir is cleaned up.
     #[test]
     fn term_is_forwarded_to_the_app_and_exits_137() {
+        if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         let (code, out, err) = signal_run(libc::SIGTERM);
         assert_eq!(
             code,
@@ -1744,6 +1752,10 @@ print('CONNECT-OK')";
     /// (128+SIGHUP), no restart.
     #[test]
     fn hup_is_forwarded_to_the_app_and_exits_129() {
+        if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         let (code, out, err) = signal_run(libc::SIGHUP);
         assert_eq!(
             code,
@@ -1757,6 +1769,10 @@ print('CONNECT-OK')";
     /// does), the run sends `READY=1` when the app is up.
     #[test]
     fn sd_notify_reports_ready_when_the_app_runs() {
+        if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         let tmp = crate::testutil::TmpDir::new("sd-notify");
         let sock_path = tmp.path().join("notify.sock");
         let datagram = std::os::unix::net::UnixDatagram::bind(&sock_path)

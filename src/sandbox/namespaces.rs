@@ -555,6 +555,10 @@ mod tests {
 
     #[test]
     fn killing_the_app_takes_down_the_whole_ns() {
+        if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         let _lock = crate::testutil::SANDBOX_LOCK
             .lock()
             .unwrap_or_else(|e| panic!("SANDBOX_LOCK poisoned: {e}"));
@@ -671,6 +675,10 @@ mod tests {
 
     #[test]
     fn uts_ns_sets_the_instance_hostname() {
+        if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         let (code, out, err) = run_cmd(
             &["/bin/sh", "-c", "uname -n"],
             &cfg("rustrover", "work", NetworkMode::Shared),
@@ -721,6 +729,10 @@ mod tests {
 
     #[test]
     fn network_none_gives_a_bare_ns_with_loopback_up() {
+        if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         let (code, out, err) = run_cmd(
             &[
                 "/bin/sh",
@@ -756,6 +768,10 @@ mod tests {
 
     #[test]
     fn network_shared_keeps_the_host_ns() {
+        if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         let (code, out, err) = run_cmd(
             &[
                 "/bin/sh",
@@ -790,6 +806,10 @@ mod tests {
 
     #[test]
     fn the_full_ns_set_is_fresh() {
+        if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
+            eprintln!("    skipped: unprivileged userns unavailable in this environment");
+            return;
+        }
         // The 2.6 reference check, self-contained: every namespaced
         // identity except the (deliberately) shared net ns must differ
         // from the host's. (Note: on this kernel the mount namespace
