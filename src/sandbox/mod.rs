@@ -1525,8 +1525,11 @@ mod tests {
     ///
     /// Needs a running wlroots compositor providing
     /// `wp_security_context_v1` (this project's target desktop,
-    /// sway): without one the tagging fails before the fork and the
-    /// run exits non-zero — an honest failure, not a skip.
+    /// sway) for the pre-fork tag exchange: without one the test
+    /// skips (the three-check mirror of the integration suite's
+    /// `wayland_tagged_socket_is_the_only_socket`) — CI runners are
+    /// headless; with a compositor present, a failing tagged run is
+    /// an honest failure.
     #[test]
     fn tagged_socket_is_carried_reachable_and_untagged() {
         if !crate::sandbox::userns::tests::unprivileged_userns_supported() {
@@ -1542,6 +1545,33 @@ mod tests {
         let _sb_lock = crate::testutil::SANDBOX_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+
+        // The tag exchange runs against the session's live
+        // compositor, so this test needs the session's real Wayland
+        // environment (read under the env lock). A headless machine
+        // (a CI runner) has none: skip, with the same three checks
+        // the integration suite applies
+        // (`wayland_tagged_socket_is_the_only_socket`).
+        let wd = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+        if wd.is_empty() {
+            eprintln!("    skipped: no running wlroots compositor in this environment");
+            return;
+        }
+        let uid = nix::unistd::getuid().as_raw();
+        let std_xdg = format!("/run/user/{uid}");
+        let xdg = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
+        if xdg != std_xdg {
+            eprintln!(
+                "    skipped: the session XDG {xdg:?} is not the systemd-standard \
+                 {std_xdg:?} the in-sandbox path translation (decision #28) assumes"
+            );
+            return;
+        }
+        let upstream = format!("{xdg}/{wd}");
+        if !std::path::Path::new(&upstream).exists() {
+            eprintln!("    skipped: the session Wayland socket {upstream:?} is absent");
+            return;
+        }
 
         let config = tagged_config();
         let host_runtime = mounts::instance_runtime_dir(&config);
