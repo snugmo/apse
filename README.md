@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/apse-header-tagline.svg" alt="apse — Wayland security context wrapper" width="489">
+  <img src="assets/apse-header-tagline.svg" alt="apse — unprivileged in-process sandbox for Wayland" width="587">
 </p>
 
 # apse
