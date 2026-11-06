@@ -1,6 +1,6 @@
 # Socket-activated half of the prompt broker (phase 6.5).
 #
-# Owns $XDG_RUNTIME_DIR/apse-broker, the Unix stream socket a
+# Owns $XDG_RUNTIME_DIR/apse-broker, the Unix stream socket an
 # apse proxy (`apse wayland --proxy`) connects to. Each
 # connection carries one N-D-JSON line of one of two kinds
 # (dispatched on the `kind` field): a `clipboard-read`
