@@ -154,6 +154,14 @@ phase 8.1).**
   checked-in `wayland_scanner::generate_interfaces!` table over
   `protocols/*.xml` that expands at compile time. **Do not hand-edit
   either file** (CI regenerates and diffs them).
+  `scripts/bake_header.py` re-bakes the header SVG lettering (one
+  `<path>` per glyph, cubic-only — `all_cubic=True`, LESSONS #50) from
+  Open Sans; it is deterministic (a re-run is byte-identical) and
+  preserves the logo mark group verbatim. `scripts/verify_header.py`
+  checks the result without eyeballing: a nesting-aware contour
+  winding check plus a per-group pixel comparison of the RSVG render
+  against FreeType at the baker's exact geometry (tolerances
+  calibrated against the `all_cubic=False` failure).
 - `.github/workflows/ci.yml` — protocol-table regeneration check +
   cargo check
 - `systemd/user/` — the apse-broker socket+service units: the only
@@ -175,9 +183,10 @@ phase 8.1).**
   fd-misrouting post-mortem
 - `assets/` — logos/headers. The header SVG lettering (wordmark and
   tagline) is baked from Open Sans (Bold / Regular) — one `<path>` per
-  glyph, no `<text>` anywhere — so regenerate it rather than
-  hand-editing glyph paths (the `wlsctx`→`apse` rename in feb3f76
-  missed exactly this; LESSONS.md #49)
+  glyph, no `<text>` anywhere — so regenerate it with
+  `scripts/bake_header.py` rather than hand-editing glyph paths
+  (`scripts/verify_header.py` checks the result; the `wlsctx`→`apse`
+  rename in feb3f76 missed exactly this; LESSONS.md #49/#50)
 
 ## Facts
 
