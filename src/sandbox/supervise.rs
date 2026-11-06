@@ -783,8 +783,14 @@ mod tests {
         // `cat` runs as a plain top-level command instead.
         let sandbox_inst = mounts::sandbox_instance_dir(&config);
         let ctrl_app = format!("{sandbox_inst}/p4-ctrl");
+        // The success/failure is normalised *in the script*: the
+        // exit status of a *failed redirection* is shell-specific
+        // (bash: 1, dash — Ubuntu's /bin/sh: 2; POSIX only
+        // guarantees "non-zero"), so `$?` here is not the probe —
+        // the `&&`/`||` mapping is (LESSONS #51). The assertion
+        // targets denial (non-zero), never the code itself.
         let script = format!(
-            "echo x > {denied} 2>/dev/null; a=$?; echo ctrl > {ctrl_app} 2>/dev/null; b=$?; cat {ctrl_app} 2>/dev/null; echo a=$a b=$b"
+            "echo x > {denied} 2>/dev/null && a=0 || a=1; echo ctrl > {ctrl_app} 2>/dev/null && b=0 || b=1; cat {ctrl_app} 2>/dev/null; echo a=$a b=$b"
         );
         let (code, out, err) = run_cmd(&["/bin/sh".into(), "-c".into(), script], &config);
         if expect_ok(code, &out, &err, "openat write probe").is_err() {
