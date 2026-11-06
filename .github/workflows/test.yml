@@ -1,0 +1,38 @@
+# Test workflow: runs the full test suite on every push to main.
+#
+# Single job, single gate: `cargo test --locked -- --test-threads=1`.
+#
+# The `--locked` pins the build to Cargo.lock (deps are pinned in this
+# repo; a lockfile drift is a finding, not something to paper over).
+#
+# `--test-threads=1` is *required*, not a preference: several tests
+# mutate the process environment (`std::env::set_var`/`remove_var` —
+# C `setenv`/`unsetenv`) to exercise socket activation and the CLI,
+# and those are undefined behaviour when any *other* test thread
+# reads the environment concurrently; the sandbox tests `fork(2)`,
+# and a lingering multi-threaded runtime across the fork deadlocks on
+# `std`'s global `thread_info` lock. Single-threading removes both;
+# the suite is dominated by the SANDBOX_LOCK-serialised sandbox
+# tests, so it costs ~nothing (see ci.yml's test step and
+# LESSONS.md, the fork/thread-info and env-mutation entries).
+#
+# The suite (sandbox integration tests in particular) needs
+# unprivileged user namespaces, which ubuntu-latest provides.
+
+name: Test
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        run: cargo test --locked -- --test-threads=1
