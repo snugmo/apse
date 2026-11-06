@@ -936,3 +936,21 @@ audited as a write).
   children, never enable controllers under a populated cgroup — safe),
   and how the user-slice delegation behaves in Phase 6.1 — fallback
   path covers any surprise.
+- **Tagged-socket coverage is absent from CI (headless runner)**: the
+  pre-fork `wp_security_context_v1` tag exchange runs against the
+  session's live compositor (`sway`/wlroots), which the GitHub
+  `ubuntu-latest` runner has none of, so the in-crate tagged test
+  (`sandbox::tests::tagged_socket_is_carried_reachable_and_untagged`)
+  and the integration test
+  (`wayland_tagged_socket_is_the_only_socket`) skip via the same
+  three-check predicate (empty `WAYLAND_DISPLAY`, non-standard
+  `XDG_RUNTIME_DIR`, absent session socket). The tagged path itself
+  (tag creation, the `security.context` xattr, reachability,
+  untagging on teardown) is therefore only exercised on a live
+  desktop, not in CI. A standalone future item: a small fake
+  wlroots compositor that advertises `wp_security_context_v1`
+  (accepts the `get_security_context` request, sets the socket's
+  `security.context` xattr, returns the context) so the tagged path
+  runs headlessly. Not a blocker for the current suite — the other
+  sandbox tests need only the `run` pipeline, which works without a
+  compositor.

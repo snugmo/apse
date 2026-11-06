@@ -162,8 +162,18 @@ phase 8.1).**
   winding check plus a per-group pixel comparison of the RSVG render
   against FreeType at the baker's exact geometry (tolerances
   calibrated against the `all_cubic=False` failure).
-- `.github/workflows/ci.yml` — protocol-table regeneration check +
-  cargo check
+- `.github/workflows/ci.yml` — the full CI gate, run on pushes to
+  `main` only (single-developer repo, so `main` is the merge point
+  and the gate for it): compile + the two table sync-checks
+  (`wlr_tables.rs` is rebuilt by the compiler from the vendored
+  protocol XMLs, `interfaces.rs` is diffed against the generator
+  output), `rustfmt`, `clippy` (deny warnings), and the full test
+  suite, run single-threaded. It runs on `ubuntu-latest` (Ubuntu
+  26.04), a headless runner: the workflow first disables Ubuntu's
+  default AppArmor unprivileged-userns restriction so the sandbox
+  tests can map their uid/gid, and the header comment is the
+  authoritative explanation of that and of the runner quirks the
+  test suite's skip-guards absorb (see the "CI runner" Facts note).
 - `systemd/user/` — the apse-broker socket+service units: the only
   units in the repo. Per-app proxies are documented manual runs (the
   README), and the phase-7.2/7.3 `dbus-proxy`/`xwayland` sidecars
@@ -195,6 +205,33 @@ phase 8.1).**
   `nono`) — see PLAN.md. The container-era deployment is fully
   deleted; the broker units are re-homed to the subcommand CLI
   (phase 7.1).
+- **CI runs on a headless `ubuntu-latest` runner (Ubuntu 26.04),
+  which differs from the Fedora 45 dev target in three ways the
+  test suite must absorb** (the `ci.yml` header documents the first;
+  the other two are handled by skip-guards in the tests themselves):
+  (1) Ubuntu enables
+  `kernel.apparmor_restrict_unprivileged_userns=1` by default — an
+  unprivileged `unshare(CLONE_NEWUSER)` *succeeds* but the follow-on
+  `setgroups` write is denied, so the single-extent `uid_map`/
+  `gid_map` fail with EPERM. `ci.yml` turns the knob off with a
+  **hard** `sudo sysctl -w …=0` step (no `|| true` — a future runner
+  that drops it should fail loudly, not silently skip the suite);
+  the sandbox tests additionally probe the real sequence
+  (`sandbox::userns::tests::unprivileged_userns_supported`, cached in
+  a one-shot fork) and skip on any machine where the environment
+  refuses, so the suite degrades gracefully off-Ubuntu too.
+  (2) The runner is **headless** — no `sway`/wlroots compositor — so
+  the tagged-socket tests (in-crate
+  `sandbox::tests::tagged_socket_is_carried_reachable_and_untagged`,
+  integration `wayland_tagged_socket_is_the_only_socket`) skip via a
+  three-check predicate (`WAYLAND_DISPLAY` empty, a non-standard
+  `XDG_RUNTIME_DIR`, or an absent session socket); full tagged-path
+  coverage on CI would need a fake compositor implementing
+  `wp_security_context_v1` (PLAN.md §8). (3) The runner's
+  `/bin/sh` is **dash**, not bash, so a test that captures `$?`
+  after a *failed redirection* must not assert an exact code (dash:
+  2, bash: 1; POSIX only guarantees non-zero) — normalise it in the
+  script (`cmd && a=0 || a=1`, LESSONS #51).
 - The app runs as its **real uid** inside the user namespace: the
   `uid_map` is a **single extent `<uid> <uid> 1`**, written **exactly
   once** (decision #9), because that is all an unprivileged creator may
