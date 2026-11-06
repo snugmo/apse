@@ -419,9 +419,8 @@ mod tests {
             &[("XDG_RUNTIME_DIR", Some(runtime.path().to_str().unwrap()))],
             || {
                 let expected = runtime.path().join("apse/work/wayland-1");
-                let (_, _, listener) =
-                    obtain_listener(&test_wayland_listen("apse/work/wayland-1"))
-                        .expect("relative path must land in the runtime dir");
+                let (_, _, listener) = obtain_listener(&test_wayland_listen("apse/work/wayland-1"))
+                    .expect("relative path must land in the runtime dir");
                 assert_eq!(socket_path(&listener), Some(expected));
                 assert!(runtime.path().join("apse/work").is_dir());
             },

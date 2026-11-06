@@ -636,8 +636,7 @@ mod tests {
                 ("APSE_SOCKET_PATH", Some("/run/apse/wayland-1")),
             ],
             || {
-                let args =
-                    parse_wayland(&["apse", "wayland"]).expect("env vars satisfy all args");
+                let args = parse_wayland(&["apse", "wayland"]).expect("env vars satisfy all args");
                 assert_eq!(args.app_id, "envapp");
                 assert_eq!(args.instance_id, "envinst");
                 assert_eq!(args.sandbox_engine, "envengine");
@@ -737,24 +736,21 @@ mod tests {
         // present for clap's conflict check, so a stray env var (e.g. left
         // over from a shell) makes a `--socket-activation` run refuse to
         // start instead of silently ignoring the path.
-        with_env(
-            &[("APSE_SOCKET_PATH", Some("/run/apse/wayland-1"))],
-            || {
-                let err = parse_wayland(&[
-                    "apse",
-                    "wayland",
-                    "--socket-activation",
-                    "--app-id",
-                    "a",
-                    "--instance-id",
-                    "i",
-                    "--sandbox-engine",
-                    "apse",
-                ])
-                .expect_err("--socket-activation must conflict with an env-provided --listen");
-                assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
-            },
-        );
+        with_env(&[("APSE_SOCKET_PATH", Some("/run/apse/wayland-1"))], || {
+            let err = parse_wayland(&[
+                "apse",
+                "wayland",
+                "--socket-activation",
+                "--app-id",
+                "a",
+                "--instance-id",
+                "i",
+                "--sandbox-engine",
+                "apse",
+            ])
+            .expect_err("--socket-activation must conflict with an env-provided --listen");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        });
     }
 
     #[test]

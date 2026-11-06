@@ -188,11 +188,7 @@ mod tests {
     fn a_malformed_toml_is_a_hard_error() {
         let tmp = TmpDir::new("config-bad");
         std::fs::create_dir_all(tmp.path().join("apse/apps")).unwrap();
-        std::fs::write(
-            tmp.path().join("apse/apps/bad.toml"),
-            "gpu = not-a-bool\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join("apse/apps/bad.toml"), "gpu = not-a-bool\n").unwrap();
         with_env(
             &[(
                 "XDG_CONFIG_HOME",

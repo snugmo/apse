@@ -402,10 +402,9 @@ fn run_decide(args: &DecideArgs) -> Result<()> {
     let request = if listing {
         apse::broker::encode_list_request()?
     } else {
-        let d = apse::broker::parse_decision(
-            args.decision.as_deref().expect("checked by validate()"),
-        )
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let d =
+            apse::broker::parse_decision(args.decision.as_deref().expect("checked by validate()"))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
         apse::broker::encode_decide_request(&d, args.prompt)?
     };
     info!(
@@ -583,11 +582,11 @@ mod tests {
     use super::policy_from_cli;
     use crate::sandbox::userns::tests::run_in_child;
     use crate::testutil::TmpDir;
+    use apse::pdeathsig::{ensure_shim, get, set};
     use nix::sys::wait::waitpid;
     use nix::unistd::{ForkResult, fork};
     use std::io::Write;
     use std::os::unix::process::CommandExt;
-    use apse::pdeathsig::{ensure_shim, get, set};
 
     #[test]
     fn absent_flag_is_pass_through_not_hide_all() {
