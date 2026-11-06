@@ -1,29 +1,29 @@
 # Socket-activated half of the prompt broker (phase 6.5).
 #
-# Owns $XDG_RUNTIME_DIR/wlsctx-broker, the Unix stream socket a
-# wlsctx proxy (`wlsctx wayland --proxy`) connects to. Each
+# Owns $XDG_RUNTIME_DIR/apse-broker, the Unix stream socket a
+# apse proxy (`apse wayland --proxy`) connects to. Each
 # connection carries one N-D-JSON line of one of two kinds
 # (dispatched on the `kind` field): a `clipboard-read`
 # request/response (the clipboard gate dropped a foreign read and
 # wants the user's consent) or a one-way `clipboard-write`
 # notification (the app wrote to a selection; the broker notifies
 # and never answers). The activated service runs the broker itself
-# (see wlsctx-broker.service).
+# (see apse-broker.service).
 #
 # The broker is a host-side, in-session service on purpose: it must
 # reach the session bus (notify-send) and must outlive any one app
 # instance.
 #
 # The session decision socket the broker binds at startup (while it
-# waits for the user) lives in $XDG_RUNTIME_DIR/wlsctx, the same
+# waits for the user) lives in $XDG_RUNTIME_DIR/apse, the same
 # user-private directory the per-instance runtime dirs live in. A
 # keybinding / notification action / any program answers with:
-#   wlsctx decide                        # list the pending prompts
-#   wlsctx decide --decision allow       # (or =deny; --prompt <id>
+#   apse decide                        # list the pending prompts
+#   apse decide --decision allow       # (or =deny; --prompt <id>
 #                                        # targets a named one)
 # A timeout (default 30 s) is a deny. Every failure path fails closed.
 [Unit]
-Description=wlsctx prompt broker socket
+Description=apse prompt broker socket
 PartOf=graphical-session.target
 After=graphical-session.target
 Conflicts=wayland-session-shutdown.target
@@ -32,9 +32,9 @@ PropagatesStopTo=%N.service
 
 [Socket]
 # The socket file itself. (The *decision* socket the broker binds at
-# startup goes under wlsctx/, which the broker process creates and
-# chmods 0700 itself — see wlsctx::broker.)
-ListenStream=%t/wlsctx-broker
+# startup goes under apse/, which the broker process creates and
+# chmods 0700 itself — see apse::broker.)
+ListenStream=%t/apse-broker
 SocketMode=0600
 
 [Install]
