@@ -1,19 +1,19 @@
-# wlsctx SELinux module (phase 8.2)
+# apse SELinux module (phase 8.2)
 
-A local SELinux module that confines the wlsctx stack to its own
+A local SELinux module that confines the apse stack to its own
 domains. The enforcing-mode tuning loop is done (2026-10-29):
 audit2allow against a confined run, iterated until a confined
 `echo`+`cat`+`ls` produced zero denials — the current rule set is
 the loop's output, and any future denials are trimmed the same way
 (below). The confined run is verified: types, the `xserver_t` fix,
 and the per-instance MCS narrowing all work (a run showed
-`wlsctx_t:s0:cN` / `wlsctx_app_t:s0:cN` live — the code writes a
+`apse_t:s0:cN` / `apse_app_t:s0:cN` live — the code writes a
 low==high `s0-s0:cN`, which the kernel reports in canonical
 single-level form; 2026-10-29).
 
 ## The policy is defined directly in CIL
 
-`wlsctx.cil` is the single source of truth — and the install artifact.
+`apse.cil` is the single source of truth — and the install artifact.
 There is no `.te`, no `checkmodule`, no build step: on this toolchain
 (Fedora 45, policycoreutils 3.11) `semodule -i` accepts CIL directly
 (the CIL reader is in libsepol, the library `semodule` links — the
@@ -30,7 +30,7 @@ is the format everything ends up in anyway. Two reasons the old
   (LESSONS #27).
 - a hand-written CIL lets us state the two things the classic
   pipeline gets wrong for a user-spawned type: the **role
-  association** (`(roletype unconfined_r wlsctx_t)` — the process
+  association** (`(roletype unconfined_r apse_t)` — the process
   inherits `unconfined_r` from the shell, and a context is only
   *valid* when the role is associated with the type; without it,
   `setprocattr` of the exec context fails `EINVAL` and the MCS
@@ -43,32 +43,32 @@ the module uses them; otherwise the file is bare statements.
 
 ## What it defines
 
-- `wlsctx_exec_t` — file type for the installed `wlsctx` binary
-  (`/usr/local/bin/wlsctx` or `/usr/bin/wlsctx`; the two `(filecon …)`
+- `apse_exec_t` — file type for the installed `apse` binary
+  (`/usr/local/bin/apse` or `/usr/bin/apse`; the two `(filecon …)`
   statements at the bottom of the CIL, installed in the same command
   as the rules).
-- `wlsctx_t` — supervisor / S→A→B pipeline / sidecar domain. Reached
+- `apse_t` — supervisor / S→A→B pipeline / sidecar domain. Reached
   by transition from `unconfined_t` when the binary carries
-  `wlsctx_exec_t`. Covers: rootfs mounts (fresh tmpfs / devpts /
+  `apse_exec_t`. Covers: rootfs mounts (fresh tmpfs / devpts /
   proc, self-bind of `/`, profile binds), the per-instance cgroup,
   the per-instance runtime dir and its sockets (wayland, X, bus,
   broker), the session bus (dbus-broker as `unconfined_dbusd_t` on
   this box), spawning `xdg-dbus-proxy` and Xwayland, the
   namespace/userns/cap setup, and the `/proc/self/exe` re-execs.
-- `wlsctx_app_t` — sandboxed-app domain. B execs the app while in
-  `wlsctx_t`; the app (and its subprocesses) land here via the
+- `apse_app_t` — sandboxed-app domain. B execs the app while in
+  `apse_t`; the app (and its subprocesses) land here via the
   `bin_t`/`user_home_t` transition. "Confined user app": instance
   dir, /tmp, /dev nodes, /proc /sys /cgroup /etc, home/cache,
   system libs, session bus, loopback network.
 - `xserver_t` — stock policy transitions `unconfined_t → xserver_t`
   on `xserver_exec_t`, but in confined mode the satellite is
-  `wlsctx_t`, so the module adds the `wlsctx_t → xserver_t`
+  `apse_t`, so the module adds the `apse_t → xserver_t`
   transition plus `xserver_t` access to the X socket and MIT auth
   file it places in the per-instance dir (precautionary — the Phase
   7.3 e2e logged no denials in unconfined mode; the satellite has
   not yet run in enforcing mode).
 
-**Roles:** both `wlsctx_t` and `wlsctx_app_t` are associated with
+**Roles:** both `apse_t` and `apse_app_t` are associated with
 `unconfined_r` (the spawner's role, as container-selinux does with
 `container_t`/`container_runtime_t`) *and* with `object_r` (so their
 file labels are valid). The `unconfined_r` association is load-bearing
@@ -84,19 +84,19 @@ exactly as before, and the module is inert.
 fires:
 
 ```sh
-sudo restorecon -v /usr/local/bin/wlsctx   # picks up wlsctx_exec_t
+sudo restorecon -v /usr/local/bin/apse   # picks up apse_exec_t
 ```
 
-After that every `wlsctx` subcommand runs as `wlsctx_t`; the
+After that every `apse` subcommand runs as `apse_t`; the
 sandboxed app and the helpers it or the pipeline exec run as
-`wlsctx_app_t`; Xwayland runs as `xserver_t`. The hard boundary of
+`apse_app_t`; Xwayland runs as `xserver_t`. The hard boundary of
 the sandbox is still the namespaces + nono landlock/seccomp
 (decision #27) — the module is a second, compositable layer.
 
 If an app binary carries a type other than `bin_t`/`user_home_t`
-(check with `ls -lZ <app>`), add a `(typetransition wlsctx_t TYPE
-process wlsctx_app_t)` line (plus the matching process/file allows)
-to `wlsctx.cil` and reinstall.
+(check with `ls -lZ <app>`), add a `(typetransition apse_t TYPE
+process apse_app_t)` line (plus the matching process/file allows)
+to `apse.cil` and reinstall.
 
 ## Per-instance MCS (process-level isolation)
 
@@ -112,7 +112,7 @@ differently under the live policy's `default_range` rules (LESSONS
   `default_range` rule, so `mls_compute_sid` falls through to
   `AVTAB_CHANGE` → `mls_context_cpy`), so every stage of the S→A→B
   pipeline, the app, and the satellites run at that instance's
-  `cN`. Both `wlsctx_t` and `wlsctx_app_t` are members of the base
+  `cN`. Both `apse_t` and `apse_app_t` are members of the base
   `mcs_constrained_type` attribute, so the base mlsconstrain
   (`h1 dom h2 or t1 != mcs_constrained_type`) applies: a `cN` subject
   may signal/ptrace/transition only a process whose level it
@@ -145,11 +145,11 @@ differently under the live policy's `default_range` rules (LESSONS
 
 Mechanics (`src/mcs.rs`):
 
-- at startup, if the process label is `wlsctx_t` (confined) each
+- at startup, if the process label is `apse_t` (confined) each
   process narrows its own range to the instance's single-level
   `s0:cN` by writing
   `/proc/self/attr/exec` and re-exec'ing `/proc/self/exe` (the
-  self-`dyntransition` on `wlsctx_t`). The kernel accepts the write
+  self-`dyntransition` on `apse_t`). The kernel accepts the write
   only if the target context is *valid* (role associated with type —
   the `unconfined_r` roletypes above) and the new range is a subset
   of the current one (the base `context (contains)` constrain).
@@ -158,12 +158,12 @@ Mechanics (`src/mcs.rs`):
   range); objects created under the `s0` parent stay `s0` (see the
   object-level note above — `default_range … target low`).
 - B carries the range into the app exec via setexecfilecon
-  (`wlsctx_app_t:s0:cN`); the Xwayland and dbus-proxy satellites
+  (`apse_app_t:s0:cN`); the Xwayland and dbus-proxy satellites
   do the same for their execs.
 - the broker (shared by all instances) narrows to *single-level
 `s0`* before it binds or creates anything (`mcs::self_reexec_to_s0`,
 the same re-exec, run before the listener is taken). The
-session-level objects it serves (the `$XDG_RUNTIME_DIR/wlsctx`
+session-level objects it serves (the `$XDG_RUNTIME_DIR/apse`
 session dir and `decision.sock`) are `s0` *by construction* (the
 parent's low level, not the creator's range — see the object-level
 note), so they are reachable from every category regardless of
@@ -181,7 +181,7 @@ high does not dominate a `cN`).
   (labels have no category to carry).
 
 **Session-level objects are always `s0`** (no pre-creating needed):
-the session dir `$XDG_RUNTIME_DIR/wlsctx` and `decision.sock` are
+the session dir `$XDG_RUNTIME_DIR/apse` and `decision.sock` are
 created under `/run/user/<uid>` (a `s0` parent), so — by
 `default_range … target low` (LESSONS #29) — they take the *parent's*
 low level, `s0`, whoever creates them first. There is no
@@ -196,24 +196,24 @@ premise was wrong — the dir is `s0` by construction.)
 One command for the rules *and* the file context:
 
 ```sh
-sudo semodule -i selinux/wlsctx.cil
-sudo restorecon -v /usr/local/bin/wlsctx     # confined mode (see above)
+sudo semodule -i selinux/apse.cil
+sudo restorecon -v /usr/local/bin/apse     # confined mode (see above)
 ```
 
 The CIL carries the two `(filecon …)` statements for the binary
-(`system_u:object_r:wlsctx_exec_t:s0` — the MCS category is a
+(`system_u:object_r:apse_exec_t:s0` — the MCS category is a
 *process* label, never a file label). On 3.11 the store reads file
 contexts straight out of the module CIL (libsemanage calls
 `cil_filecons_to_string` after `cil_compile` and writes them to the
 policy's `file_contexts`), so the file context is *in* the module and
-`semodule -r wlsctx` removes it too. `restorecon` (or
-`chcon -t wlsctx_exec_t`) is what actually relabels the installed
+`semodule -r apse` removes it too. `restorecon` (or
+`chcon -t apse_exec_t`) is what actually relabels the installed
 binary — `semodule -i` only registers the context.
 
 **Remove:**
 
 ```sh
-sudo semodule -r wlsctx
+sudo semodule -r apse
 ```
 
 ## Tuning loop
@@ -224,6 +224,6 @@ sudo semodule -r wlsctx
 3. `sudo audit2allow -C <file>` — since the contexts are valid
    (roles associated), this now parses every record and proposes
    rules; review each one and port the ones that make sense into
-   `wlsctx.cil`.
-4. Reinstall (`sudo semodule -r wlsctx && sudo semodule -i
-   selinux/wlsctx.cil`) and re-run.
+   `apse.cil`.
+4. Reinstall (`sudo semodule -r apse && sudo semodule -i
+   selinux/apse.cil`) and re-run.
