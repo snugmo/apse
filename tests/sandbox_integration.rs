@@ -33,10 +33,12 @@
 //! Everything runs as a regular user (unprivileged user + mount +
 //! pid + cgroup + ipc + uts + net namespaces, the single-extent
 //! map, the Landlock floor, the seccomp-notify filter). An
-//! environment that cannot create a user namespace skips the suite
-//! (the run fails before the fork with a diagnostic naming the
-//! failed `unshare`); an environment without `/usr/bin/python3`
-//! skips it too.
+//! environment that will not grant an unprivileged user namespace
+//! skips the suite: the run fails before the fork, with a
+//! diagnostic naming either the refused `unshare` or the setgroups
+//! write the kernel/LSM denied (Ubuntu 24.04+'s AppArmor
+//! restriction denies the write *after* a successful `unshare`); an
+//! environment without `/usr/bin/python3` skips it too.
 
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;
@@ -336,8 +338,17 @@ fn run_probe(
     if let Some(mut se) = child.stderr.take() {
         let _ = se.read_to_string(&mut err);
     }
-    if !status.success() && err.contains("unshare(") {
-        eprintln!("skipping (environment cannot create a user namespace):\n{err}");
+    // Skip rather than fail when the environment simply will not
+    // grant an unprivileged userns: either the `unshare` itself was
+    // refused, or (Ubuntu 24.04+'s AppArmor case) the unshare
+    // succeeded but the kernel/LSM denied the setgroups write that
+    // precedes the maps. A uid_map/gid_map rejection is *not* in
+    // this check — that is a design failure that must fail loudly
+    // (the same split as the probe in sandbox::userns::tests).
+    if !status.success()
+        && (err.contains("unshare(") || err.contains("setgroups: Permission denied"))
+    {
+        eprintln!("skipping (environment cannot use an unprivileged user namespace):\n{err}");
         return None;
     }
     Some(ProbeRun {
