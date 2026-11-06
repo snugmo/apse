@@ -141,6 +141,11 @@ phase 8.1).**
   decision socket (list/resolve by id, timeout, refused decides)
 - `tests/phase0_interface_tables.rs` — checks the generated
   interface/wlr tables against the protocol XMLs
+- `tests/sandbox_integration.rs` — the phase-8.4 suite: the built
+  `apse run` binary spawned as a subprocess with a python3 probe;
+  asserts identity (uid map, PID 1, cgroup ns, hostname), the rebuilt
+  rootfs, the landlock floor, the network modes, the tagged socket,
+  and the lifecycle (sd-notify, TERM→KILL escalation)
 - `protocols/` — the protocol XMLs (source of `wlr_tables.rs` and the
   interface-table generator)
 - `scripts/gen_interface_table.py` — generates
@@ -172,8 +177,7 @@ phase 8.1).**
 
 ## Facts
 
-- Target: Fedora 45 (upgrade in progress), user-level systemd,
-  sway/wlroots desktop. No containers: the sandbox is created by
+- Target: Fedora 45, user-level systemd, sway/wlroots desktop. No containers: the sandbox is created by
   `apse` itself (namespaces, private rootfs, landlock+seccomp via
   `nono`) — see PLAN.md. The container-era deployment is fully
   deleted; the broker units are re-homed to the subcommand CLI
