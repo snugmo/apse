@@ -1,9 +1,9 @@
 # AGENTS.md
 
-wlsctx: runs GUI apps (JetBrains IDEs, Librewolf) in an unprivileged
+apse: runs GUI apps (JetBrains IDEs, Librewolf) in an unprivileged
 **in-process sandbox** (namespaces, private rootfs, landlock+seccomp
 via `nono`) on a wlroots Wayland desktop (sway, Fedora) with native
-Wayland + GPU rendering. The Rust binary `wlsctx` is a subcommand CLI:
+Wayland + GPU rendering. The Rust binary `apse` is a subcommand CLI:
 `run` creates the sandbox and tags the app's Wayland socket with the
 `wp_security_context_v1` protocol so the compositor identifies
 sandboxed clients; `wayland` is the original tag-and-park mode, which
@@ -73,7 +73,7 @@ phase 8.1).**
     app/`xserver_t` execs (`set_exec_context`), and the range-
     preserving re-exec (`preserve_range`, which skips a pending
     explicit exec context so the narrowing is never clobbered).
-    No-op when the current label is not `wlsctx_t`
+    No-op when the current label is not `apse_t`
 - `xwayland.rs` — the Phase-7.3 Xwayland satellite: owns an
     `Xwayland` child (same signalfd + pidfd `poll(2)` shape;
     TERM→2s→KILL teardown); the sidecar creates, binds **and
@@ -99,12 +99,12 @@ phase 8.1).**
   the `arg2` pointer)
   and `ensure_shim` (the on-demand-compiled `LD_PRELOAD` `.so` whose
   constructor re-arms the signal after an exec; in confined mode it
-  also relabels the `.so` to the module's `wlsctx_shim_t` — a 7.2
+  also relabels the `.so` to the module's `apse_shim_t` — a 7.2
   `PROT_EXEC` mapping needs `file:execute`, which the confined
   consumers hold only on that type, LESSONS #41 — and runs the
   `cc` under a *pinned* exec context, so the vforked compiler stays
-  `wlsctx_t` instead of the module's `typetransition` dragging it
-  into `wlsctx_app_t`, LESSONS #42; the xattr paths go over as
+  `apse_t` instead of the module's `typetransition` dragging it
+  into `apse_app_t`, LESSONS #42; the xattr paths go over as
   `CString` — a raw Rust byte buffer is not NUL-terminated and the
   kernel reads past it (LESSONS #43); the file is signal-suffixed,
   `pdeathsig-restore-<sig>.so`, so `SIGUSR1` (the run pipeline) and
@@ -151,13 +151,13 @@ phase 8.1).**
   either file** (CI regenerates and diffs them).
 - `.github/workflows/ci.yml` — protocol-table regeneration check +
   cargo check
-- `systemd/user/` — the wlsctx-broker socket+service units: the only
+- `systemd/user/` — the apse-broker socket+service units: the only
   units in the repo. Per-app proxies are documented manual runs (the
   README), and the phase-7.2/7.3 `dbus-proxy`/`xwayland` sidecars
   would land here
-- `selinux/` — the confined-mode SELinux module: `wlsctx.cil` (the
-  single source of truth and install artifact — `wlsctx_t`,
-  `wlsctx_app_t`, `wlsctx_shim_t`, the `xserver_t` fix, the
+- `selinux/` — the confined-mode SELinux module: `apse.cil` (the
+  single source of truth and install artifact — `apse_t`,
+  `apse_app_t`, `apse_shim_t`, the `xserver_t` fix, the
   per-instance MCS categories, `;` line comments) and `README.md`
   (the design: what the MCS actually isolates, the enforcing-mode
   tuning history)
@@ -174,7 +174,7 @@ phase 8.1).**
 
 - Target: Fedora 45 (upgrade in progress), user-level systemd,
   sway/wlroots desktop. No containers: the sandbox is created by
-  `wlsctx` itself (namespaces, private rootfs, landlock+seccomp via
+  `apse` itself (namespaces, private rootfs, landlock+seccomp via
   `nono`) — see PLAN.md. The container-era deployment is fully
   deleted; the broker units are re-homed to the subcommand CLI
   (phase 7.1).
@@ -194,7 +194,7 @@ phase 8.1).**
   the ro flag and `MS_REMOUNT` is `EPERM` (decision #21) — so ro
   semantics come from the app's real uid plus nono's landlock/seccomp
   policy, not from mount flags. The build scratch lives on
-  `/var/tmp/.wlsctx/<inst>` and carries the per-instance runtime dir
+  `/var/tmp/.apse/<inst>` and carries the per-instance runtime dir
   out from under the fresh-`/run` mask (decision #28). The combined
   seccomp-notify + Landlock floor is applied three-stage in B pre-exec
   (decision #27); B blocks on A's verdict before exec (decision #26);
@@ -206,24 +206,24 @@ phase 8.1).**
   socket; the reference pipe ("close" fd) must stay open for the
   process lifetime (ownership note in `wayland/context.rs`).
 - Per-instance runtime dir on the host:
-  `$XDG_RUNTIME_DIR/wlsctx/<app>-<instance>/`. Inside the sandbox it
+  `$XDG_RUNTIME_DIR/apse/<app>-<instance>/`. Inside the sandbox it
   always appears at the systemd-standard
-  `/run/user/<uid>/wlsctx/<app>-<instance>/`, regardless of the
+  `/run/user/<uid>/apse/<app>-<instance>/`, regardless of the
   host's `XDG_RUNTIME_DIR` (decision #28) — and that in-sandbox path
   is what the app's env uses: `run --wayland` sets `XDG_RUNTIME_DIR`
   to it and `WAYLAND_DISPLAY` to the socket name (default
   `wayland-1`).
 - **Per-instance MCS (phase 8.2, `src/mcs.rs`):** in confined mode
-  (module installed + binary relabeled to `wlsctx_exec_t`), each
+  (module installed + binary relabeled to `apse_exec_t`), each
   instance runs in its own category `cN` of the user's
   `s0-s0:c0.c1023` range (a stable hash of app-id+instance-id — the
   `run` pipeline and the standalone proxy/satellites must agree,
-  which they do by construction). Every wlsctx process narrows its
-  own range to a single-level `s0:cN` by a `wlsctx_t` self-
+  which they do by construction). Every apse process narrows its
+  own range to a single-level `s0:cN` by a `apse_t` self-
   `dyntransition` re-exec **before** it creates or binds anything, so
   every forked child inherits `cN` (a process takes its creator's
   full range); B and the Xwayland/dbus-proxy satellites carry the
-  range into their execs via setexecfilecon (`wlsctx_app_t`/
+  range into their execs via setexecfilecon (`apse_app_t`/
   `xserver_t`). The isolation is **process-level, not object-level**
   (LESSONS #29): both types are in the base `mcs_constrained_type`
   set, so the base mlsconstrain (`h1 dom h2`) lets a `cN` subject
@@ -259,7 +259,7 @@ phase 8.1).**
   `SigSet::all()` (sigfillset, all 64 bits) minus those seven — never
   by iterating nix's `Signal` enum, which stops at 31 and would leave
   the real-time range (34-64) at its default-terminate disposition,
-  letting a same-uid process kill wlsctx with `kill -34` (see
+  letting a same-uid process kill apse with `kill -34` (see
   `proxy::proxy_signal_mask`).
 - The supervisor services **every** trapped notification on the
   listener: `handle_notif` dispatches by syscall number with no pid
@@ -290,7 +290,7 @@ phase 8.1).**
   is fire-and-forget and fails open: the relay's `notify_write` uses a
   2 s deadline and never blocks or alters the write. The *user's*
   answer travels over a second, session-scoped socket
-  (`$XDG_RUNTIME_DIR/wlsctx/decision.sock`): `wlsctx decide` lists
+  (`$XDG_RUNTIME_DIR/apse/decision.sock`): `apse decide` lists
   the pending prompts (oldest first, each with an id) or resolves the
   oldest — or the one `--prompt <id>` names. A decided prompt leaves
   the queue atomically with its decision; an unbound decision socket
@@ -314,7 +314,7 @@ phase 8.1).**
   7.2 (the `dbus-proxy` sidecar), 7.3 (the `xwayland` satellite),
   8.4 (the integration test suite) and 8.5 (the threat-model review)
   are done; phase 8.2 landed the SELinux module (`selinux/` —
-  `wlsctx_t`/`wlsctx_app_t`/the xserver_t fix, written directly in
+  `apse_t`/`apse_app_t`/the xserver_t fix, written directly in
   CIL, installed and tuning-looped to zero denials — see the
   "Per-instance MCS" fact above for what it actually isolates).
   The full chain is verified at probe level (a sandboxed

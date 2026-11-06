@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/wlsctx-header-tagline.svg" alt="wlsctx — Wayland security context wrapper" width="489">
+  <img src="assets/apse-header-tagline.svg" alt="apse — Wayland security context wrapper" width="489">
 </p>
 
-# wlsctx
+# apse
 
 Run GUI applications (JetBrains IDEs, LibreWolf, …) in an **unprivileged
 in-process sandbox** on a **wlroots Wayland desktop** (sway, Fedora) while
@@ -10,7 +10,7 @@ keeping the UX as close to unconfined as possible: windows are **native
 Wayland clients** with **GPU rendering** — no VNC, no RDP, no screen
 re-encoding, no blurry text.
 
-There are no containers. A single Rust binary (`wlsctx`) creates the
+There are no containers. A single Rust binary (`apse`) creates the
 sandbox itself: Linux **user/mount/pid/ipc/uts/cgroup/net namespaces**, a
 rebuilt **private rootfs**, and a **Landlock + seccomp** policy applied
 via the [`nono`](https://crates.io/crates/nono) crate. The app runs as
@@ -28,14 +28,14 @@ This is a work in progress (personal-laptop target: 1–2 human users).
 
 [wp_security_context_v1](https://wayland.app/protocols/security-context-v1)
 is a Wayland *staging* protocol from wlroots, intended for an app to give a
-*child process* its own tagged Wayland socket. wlsctx repurposes it in the
+*child process* its own tagged Wayland socket. apse repurposes it in the
 other direction: a **host-side** process tags a listening socket so the
 *compositor* can identify the clients that connect to it.
 
-1. `wlsctx` connects to the host compositor.
+1. `apse` connects to the host compositor.
 2. It calls `wp_security_context_manager_v1.create_listener()` on a
    listening socket and sets the context's `sandbox_engine` (default
-   `wlsctx`), `app_id` and `instance_id`.
+   `apse`), `app_id` and `instance_id`.
 3. It holds the protocol's **reference pipe** (the `close_fd`) open for
    the process's whole lifetime, so the tagged socket stays valid; the
    tagged socket is then the only Wayland socket the app is pointed at.
@@ -86,11 +86,11 @@ Containment is layered:
 
 ### The sandbox: `S → A → B`
 
-`wlsctx run` builds the sandbox with a three-process pipeline (decisions
+`apse run` builds the sandbox with a three-process pipeline (decisions
 #12, #23–#26 in [PLAN.md](PLAN.md)):
 
 ```
-S  wlsctx (the supervisor — outside every namespace)
+S  apse (the supervisor — outside every namespace)
    │   • GPU precheck; creates the per-instance runtime dir
    │   • optional: registers a transient systemd user SCOPE via D-Bus
    │     (StartTransientUnit, PIDs=[self]) — or a raw-cgroup fallback
@@ -138,7 +138,7 @@ volumes" is gone). Working as the mount namespace's root, `A` assembles:
 3. `/sys` — a fresh tmpfs with read-only binds of `devices/` and `class/`
    (all a GUI app needs for PCI/DRM discovery).
 4. `/run` — a fresh tmpfs carrying **only** the per-instance dir
-   (`/run/user/<uid>/wlsctx/<app>-<instance>`), whose contents arrive from
+   (`/run/user/<uid>/apse/<app>-<instance>`), whose contents arrive from
    a build scratch on `/var/tmp`. The host's own Wayland sockets sit
    directly under `$XDG_RUNTIME_DIR` and are deliberately *invisible*
    here — the app can reach only the tagged socket.
@@ -268,7 +268,7 @@ retained).
 The broker is a **host-side user service** (not in the sandbox): it must
 reach the session bus (`notify-send`) and it is the thing that waits for
 *you*. It speaks **N-D-JSON** with two request kinds, both over its one
-socket (`$XDG_RUNTIME_DIR/wlsctx-broker`):
+socket (`$XDG_RUNTIME_DIR/apse-broker`):
 
 - **`clipboard-read`** — request/response. The relay's gate dropped a
   foreign read and is asking for consent. The broker announces it with a
@@ -280,12 +280,12 @@ socket (`$XDG_RUNTIME_DIR/wlsctx-broker`):
   reply. Fire-and-forget; a lost notification never affects the write.
 
 The *user's* answer travels over a **second, session-scoped socket**
-(`$XDG_RUNTIME_DIR/wlsctx/decision.sock`, bound once at broker startup):
+(`$XDG_RUNTIME_DIR/apse/decision.sock`, bound once at broker startup):
 
 ```sh
-wlsctx decide                       # list the pending prompts (oldest first, each with an id)
-wlsctx decide --decision allow      # resolve the oldest (or =deny)
-wlsctx decide --prompt 3 --decision allow   # resolve a named one
+apse decide                       # list the pending prompts (oldest first, each with an id)
+apse decide --decision allow      # resolve the oldest (or =deny)
+apse decide --prompt 3 --decision allow   # resolve a named one
 ```
 
 If the decision socket cannot be bound, the broker degrades: interactive
@@ -293,7 +293,7 @@ prompts are denied at once (`no-decision-socket`) instead of waited on, and
 `--auto-decide` mode never binds the socket at all (it answers every
 request automatically — a test hook).
 
-## The `wlsctx` binary
+## The `apse` binary
 
 Six subcommands (the relay logic lives in `src/proxy/`, the broker in
 `src/broker.rs`, the sandbox in `src/sandbox/`):
@@ -301,7 +301,7 @@ Six subcommands (the relay logic lives in `src/proxy/`, the broker in
 1. **`run`** — run a command inside the sandbox (the `S → A → B`
    pipeline above).
    - `--app-id` / `--instance-id` (default `app` / `1`): feed the UTS
-     hostname (`wlsctx-<app>-<instance>`) and the per-instance cgroup name
+     hostname (`apse-<app>-<instance>`) and the per-instance cgroup name
      (`<app>-<instance>`); only `[A-Za-z0-9._-]`.
    - `--network shared|none` (default `shared`).
    - `--gpu` / `--no-gpu` — override the profile's GPU setting.
@@ -310,14 +310,14 @@ Six subcommands (the relay logic lives in `src/proxy/`, the broker in
    - `--listen <path>` (an absolute path as given, a relative path in the
      per-instance dir; implies `--wayland`) or `--socket-activation`
      (adopt the tagged socket from `LISTEN_FDS`).
-   - `--sandbox-engine` (default `wlsctx`).
+   - `--sandbox-engine` (default `apse`).
    - everything after `--` is the command to run, e.g.
-     `wlsctx run -- /bin/sh -c 'id'`.
+     `apse run -- /bin/sh -c 'id'`.
 
 2. **`wayland`** — set up a tagged Wayland socket (tag-and-park), or with
    `--proxy` run the transparent relay.
    - `--app-id` / `--instance-id` / `--sandbox-engine` (required, non-empty;
-     `WLSCTX_*` env vars honoured).
+     `APSE_*` env vars honoured).
    - `--listen <path>` (required unless `--socket-activation`) or
      `--socket-activation`.
    - `--proxy` + `--tagged-socket <path>` — relay mode; the tagged socket
@@ -328,9 +328,9 @@ Six subcommands (the relay logic lives in `src/proxy/`, the broker in
 
 3. **`broker`** — the clipboard prompt broker (host user service).
    `--listen <path>` (required unless `--socket-activation`; the
-   `WLSCTX_SOCKET_PATH` environment variable is honoured) /
+   `APSE_SOCKET_PATH` environment variable is honoured) /
    `--socket-activation`, `--auto-decide <allow|deny>` (test hook),
-   `--broker-timeout-millis` (default 30000, `WLSCTX_BROKER_TIMEOUT_MILLIS`
+   `--broker-timeout-millis` (default 30000, `APSE_BROKER_TIMEOUT_MILLIS`
    honoured).
 
 4. **`decide`** — one-shot client of the broker's decision socket:
@@ -363,16 +363,16 @@ Six subcommands (the relay logic lives in `src/proxy/`, the broker in
 There are no images to build and no container runtime to configure — you
 build one binary and (optionally) install one user unit.
 
-1. **Build.** `cargo build --release` → `target/release/wlsctx`. Install
+1. **Build.** `cargo build --release` → `target/release/apse`. Install
    it wherever you like; the broker unit below expects
-   `/usr/local/bin/wlsctx` (override `ExecStart` in a drop-in if yours
+   `/usr/local/bin/apse` (override `ExecStart` in a drop-in if yours
    lives elsewhere).
 2. **Install the broker unit.** Copy
-   `systemd/user/wlsctx-broker.{socket,service}` to
+   `systemd/user/apse-broker.{socket,service}` to
    `~/.config/systemd/user/`.
 3. `systemctl --user daemon-reload`
 4. **(Optional) enable the broker.**
-   `systemctl --user enable --now wlsctx-broker.socket` — it is
+   `systemctl --user enable --now apse-broker.socket` — it is
    socket-activated and stays dormant until a proxy asks it about a
    dropped read. The broker is only needed for the relay's consent prompt
    and copy-out notification; tag-and-park and plain `run` do not touch
@@ -385,7 +385,7 @@ nodes are bind-mounted into the sandbox); without it, pass `--no-gpu`.
 ## Adding an app
 
 An app is described by a **TOML profile** at
-`~/.config/wlsctx/apps/<app-id>.toml` (the replacement for the old quadlet
+`~/.config/apse/apps/<app-id>.toml` (the replacement for the old quadlet
 drop-ins). The file is optional: built-in defaults cover the known apps
 (`rustrover` → `/opt/rustrover`, `librewolf` →
 `/usr/lib64/librewolf`), and a profile-less `run` (an ad-hoc command) falls
@@ -394,7 +394,7 @@ it never silently degrades the sandbox. All path fields are absolute
 (`~` is not expanded — profiles are data, not shell).
 
 ```toml
-# ~/.config/wlsctx/apps/rustrover.toml
+# ~/.config/apse/apps/rustrover.toml
 
 gpu = true                 # build /dev/dri in the sandbox (CLI --no-gpu overrides)
 tmp_size_mib = 2048        # size of the fresh /tmp (0 = kernel default)
@@ -428,13 +428,13 @@ Then run it:
 
 ```sh
 # a plain command (ad-hoc, no app profile, no Wayland):
-wlsctx run -- /bin/sh -c 'id && ls /root'
+apse run -- /bin/sh -c 'id && ls /root'
 
 # a GUI app with a tagged Wayland socket:
-wlsctx run --app-id rustrover --instance-id 1 --wayland -- /opt/rustrover/bin/rover
+apse run --app-id rustrover --instance-id 1 --wayland -- /opt/rustrover/bin/rover
 
 # cut the network:
-wlsctx run --app-id rustrover --wayland --network none -- /opt/rustrover/bin/rover
+apse run --app-id rustrover --wayland --network none -- /opt/rustrover/bin/rover
 ```
 
 ## Running the relay (per-app)
@@ -449,18 +449,18 @@ derive. Two constraints on the paths:
   (that dir is what the app sees as its `$XDG_RUNTIME_DIR`), so the app
   can reach it;
 - the **tagged** socket must sit *outside* the per-instance dir (e.g. as
-  a sibling under `$XDG_RUNTIME_DIR/wlsctx/`), so the app cannot reach it
+  a sibling under `$XDG_RUNTIME_DIR/apse/`), so the app cannot reach it
   — a socket the app can reach that is also a valid tagged socket would
   let it bypass the relay.
 
 ```sh
 # from a terminal, or a one-off `systemd-run --user --scope`:
-wlsctx wayland \
-  --app-id rustrover --instance-id 1 --sandbox-engine wlsctx \
-  --listen "$XDG_RUNTIME_DIR/wlsctx/rustrover-1/wayland-1" \
-  --tagged-socket "$XDG_RUNTIME_DIR/wlsctx/rustrover-1.tagged" \
+apse wayland \
+  --app-id rustrover --instance-id 1 --sandbox-engine apse \
+  --listen "$XDG_RUNTIME_DIR/apse/rustrover-1/wayland-1" \
+  --tagged-socket "$XDG_RUNTIME_DIR/apse/rustrover-1.tagged" \
   --clipboard-policy deny \
-  --broker-socket "$XDG_RUNTIME_DIR/wlsctx-broker" \
+  --broker-socket "$XDG_RUNTIME_DIR/apse-broker" \
   --notify-copy-out
 ```
 
@@ -468,18 +468,18 @@ Then point the app at the public socket from its profile and start it
 **without** `--wayland` (the relay owns the tagged socket — `run` must not
 create a second one). The profile's `[env]` section sets both variables to
 the *in-sandbox* instance dir, whose location is fixed at
-`/run/user/<uid>/wlsctx/<app>-<instance>` regardless of the host's
+`/run/user/<uid>/apse/<app>-<instance>` regardless of the host's
 `XDG_RUNTIME_DIR`:
 
 ```toml
-# ~/.config/wlsctx/apps/rustrover.toml — routing the app through the relay
+# ~/.config/apse/apps/rustrover.toml — routing the app through the relay
 [env]
-XDG_RUNTIME_DIR = "/run/user/1000/wlsctx/rustrover-1"
+XDG_RUNTIME_DIR = "/run/user/1000/apse/rustrover-1"
 WAYLAND_DISPLAY = "wayland-1"
 ```
 
 ```sh
-wlsctx run --app-id rustrover --instance-id 1 -- /opt/rustrover/bin/rover
+apse run --app-id rustrover --instance-id 1 -- /opt/rustrover/bin/rover
 ```
 
 The chain works end-to-end: a sandboxed Wayland client is driven through
@@ -495,7 +495,7 @@ persistent and greppable:
 
 ```ini
 [Service]
-ExecStart=/usr/local/bin/wlsctx wayland --proxy …
+ExecStart=/usr/local/bin/apse wayland --proxy …
 StandardError=journal
 LogDriver=passthrough
 ```
@@ -506,7 +506,7 @@ LogDriver=passthrough
 
 - The compositor must be **wlroots-based** (e.g. sway) and must provide the
   staging global `wp_security_context_manager_v1`. If it does not,
-  `wlsctx` exits with an actionable error pointing at the check below.
+  `apse` exits with an actionable error pointing at the check below.
 - The compositor must be willing to enforce per-context policy on
   security-context clients (that is what makes this more than labelling)
   and must not re-expose the manager to a tagged client (the nesting
@@ -523,7 +523,7 @@ wlsinfo -t       # staging globals — wp_security_context_manager_v1
                  # must be present here
 
 # the sandboxed view (a `run` of the inspector against the tagged socket):
-wlsctx run --app-id probe --instance-id 1 --wayland -- /usr/bin/wlsinfo
+apse run --app-id probe --instance-id 1 --wayland -- /usr/bin/wlsinfo
 ```
 
 Diff the two global lists. Privileged globals **should be absent** from the
@@ -537,7 +537,7 @@ sandboxed view, notably:
 - input method (`zwp_input_method_manager_v1`)
 
 Exactly which globals your compositor hides for a security-context client
-is *its* policy, not wlsctx's — treat the diff as your own acceptance
+is *its* policy, not apse's — treat the diff as your own acceptance
 checklist, and file upstream if the set is wider than you expected. On
 sway on this desktop the host shows 56 globals, the tagged socket 35, and
 `wp_security_context_manager_v1` is present on the host but absent on the
@@ -545,7 +545,7 @@ tagged socket.
 
 ## Threat model
 
-**What wlsctx protects:** the host filesystem (other users' homes,
+**What apse protects:** the host filesystem (other users' homes,
 `/root`, `/var`, `/srv`, `/media`, `/mnt` are masked; everything else is
 read-only by the self-bind *and* default-denied by Landlock; the app keeps
 its own real XDG dirs writable, as its real uid); privilege escalation
@@ -559,14 +559,14 @@ of data copied on the host is dropped (the app sees an empty clipboard) or,
 when the broker is wired, explicitly approved by you first. The host
 session bus is unreachable by default (its socket is not in the rootfs and
 AF_UNIX is Landlock-restricted to the per-instance dir). And — optionally,
-on a host where the local `wlsctx` SELinux module is installed (phase 8.2)
-— a **type-confinement layer**: the whole stack runs `wlsctx_t`
-(supervisor/pipeline/sidecars) and the sandboxed app runs `wlsctx_app_t`,
+on a host where the local `apse` SELinux module is installed (phase 8.2)
+— a **type-confinement layer**: the whole stack runs `apse_t`
+(supervisor/pipeline/sidecars) and the sandboxed app runs `apse_app_t`,
 each app instance in its own per-instance MCS category `cN`, so the base
 MLS constrain isolates the instances' **processes** from one another (a
 `cN` subject may only signal/ptrace/transition a same-`cN` process —
 *stronger* than podman's two-category `cNNN,cMMM` model) and a
-compromised app is confined to the `wlsctx_app_t` allow-set. Filesystem
+compromised app is confined to the `apse_app_t` allow-set. Filesystem
 containment itself still comes from the namespaces + landlock rootfs: the
 MCS layer is process-level, not file-level (objects created under the
 `s0` runtime parent stay `s0` — see the residual-risk bullet below).
@@ -608,7 +608,7 @@ MCS layer is process-level, not file-level (objects created under the
   deliberate (apps must persist their own settings), but it means a
   compromised extension can tamper with files another of *your* apps will
   read.
-- **Portal attribution.** When the `wlsctx dbus-proxy` sidecar (Phase
+- **Portal attribution.** When the `apse dbus-proxy` sidecar (Phase
   7.2) sits in front of the session bus, portal calls are proxied to
   the *host's* portal, which attributes them to the **host** desktop,
   not the sandbox — the `sandbox_engine`/`app_id`/`instance_id` context
@@ -665,9 +665,9 @@ confirmation), and — once a D-Bus/socket path exists — allow the host's
   that a drag creates is labelled `selection=clipboard`: the protocol
   never says which selection or drag a `receive` belongs to, so the
   stable-protocol offer can only carry the stable-selection label.
-- **The sidecars are opt-in, not on by default.** `wlsctx dbus-proxy`
-  (Phase 7.2) and the optional `wlsctx xwayland` host satellite
+- **The sidecars are opt-in, not on by default.** `apse dbus-proxy`
+  (Phase 7.2) and the optional `apse xwayland` host satellite
   (Phase 7.3) are built and run per instance; neither is started by a
   plain `run`, so out of the box the host session bus is simply
   unreachable and there is no in-sandbox X server.
-- **SELinux: local module built, installed and tuned (enforcing-mode tuning loop done, 2026-10-29).** `selinux/` ships a local module (`wlsctx`) defining `wlsctx_t` (supervisor/pipeline/sidecars) and `wlsctx_app_t` (the sandboxed app), plus the `xserver_t` rules the reconnaissance found missing and the per-instance MCS mechanics (`src/mcs.rs`). The policy is written **directly in CIL** — `selinux/wlsctx.cil` is the single source of truth *and* the install artifact (`sudo semodule -i selinux/wlsctx.cil`, then `sudo restorecon -v /usr/local/bin/wlsctx` for confined mode; no `.te`/`checkmodule`, no `build.sh`). Installed, the stack is confined; the tuning loop (audit2allow against a confined run, iterated until a confined `echo`+`cat`+`ls` produced zero denials) closed the known allow gaps. What the module deliberately does *not* do: **file-level** separation between instances (created objects are `s0`, not `cN` — see the "SELinux MCS is process-level" residual-risk bullet above) and the **`signull` (kill -0)** category gap (unfixable in a module CIL). Uninstalled, the stack runs unconfined exactly as before; the module is a second containment layer on top of the namespaces + nono, not a replacement for them.
+- **SELinux: local module built, installed and tuned (enforcing-mode tuning loop done, 2026-10-29).** `selinux/` ships a local module (`apse`) defining `apse_t` (supervisor/pipeline/sidecars) and `apse_app_t` (the sandboxed app), plus the `xserver_t` rules the reconnaissance found missing and the per-instance MCS mechanics (`src/mcs.rs`). The policy is written **directly in CIL** — `selinux/apse.cil` is the single source of truth *and* the install artifact (`sudo semodule -i selinux/apse.cil`, then `sudo restorecon -v /usr/local/bin/apse` for confined mode; no `.te`/`checkmodule`, no `build.sh`). Installed, the stack is confined; the tuning loop (audit2allow against a confined run, iterated until a confined `echo`+`cat`+`ls` produced zero denials) closed the known allow gaps. What the module deliberately does *not* do: **file-level** separation between instances (created objects are `s0`, not `cN` — see the "SELinux MCS is process-level" residual-risk bullet above) and the **`signull` (kill -0)** category gap (unfixable in a module CIL). Uninstalled, the stack runs unconfined exactly as before; the module is a second containment layer on top of the namespaces + nono, not a replacement for them.

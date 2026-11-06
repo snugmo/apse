@@ -2,7 +2,7 @@
 # LANDED — kept as a post-mortem)
 
 **Status: fixed.** Landed in commit `88d237e`
-(`wlsctx: fix fd misrouting when a datagram carries several
+(`apse: fix fd misrouting when a datagram carries several
 fd-bearing messages`): the `drain(0..take)` front-slice fix in
 `forward()` plus the regression test
 `two_fd_messages_in_one_datagram_keep_their_fds` (verified to fail
@@ -219,8 +219,8 @@ start failing, investigate before adjusting them.
 - After landing: delete the "Critical (open defect)" section in
   `TASKS.md`, delete the pointer in `AGENTS.md`, and delete this file
   (or keep it as a post-mortem — ask the user).
-- Commit style follows the repo convention `wlsctx: <what>`, e.g.
-  `wlsctx: fix fd misrouting when a datagram carries several
+- Commit style follows the repo convention `apse: <what>`, e.g.
+  `apse: fix fd misrouting when a datagram carries several
   fd-bearing messages`.
 
 ## 9. Key locations (HEAD `fa4eee8`)
