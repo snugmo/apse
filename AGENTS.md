@@ -173,7 +173,11 @@ phase 8.1).**
 - `docs/postmortems/` — full write-ups of significant bugs/fixes (one
   per incident), referenced from `LESSONS.md`; currently the
   fd-misrouting post-mortem
-- `assets/` — logos/headers
+- `assets/` — logos/headers. The header SVG lettering (wordmark and
+  tagline) is baked from Open Sans (Bold / Regular) — one `<path>` per
+  glyph, no `<text>` anywhere — so regenerate it rather than
+  hand-editing glyph paths (the `wlsctx`→`apse` rename in feb3f76
+  missed exactly this; LESSONS.md #49)
 
 ## Facts
 
