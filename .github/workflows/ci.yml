@@ -20,12 +20,16 @@
 #    not regenerated, this step fails the build.
 #
 # 3. the usual gates: rustfmt, clippy (deny warnings), the test suite.
+#
+# Runs on pushes to main only (no other branches, no pull requests):
+# this is a single-developer repo, so the main push is the merge
+# point and the gate for it.
 
 name: CI
 
 on:
   push:
-  pull_request:
+    branches: [main]
 
 jobs:
   check:
