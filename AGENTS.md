@@ -305,8 +305,8 @@ phase 8.1).**
   "Per-instance MCS" section), decision #38.
 - GPU: `/dev/dri/renderD*` nodes are bind-mounted into the sandbox's
   `/dev`; the user must be in the `render` group. `/dev` nodes are
-  **bind-mounted, not mknod'd**, so future SELinux modules can use the
-  canonical genfs labels.
+  **bind-mounted, not mknod'd**, so the SELinux module (`selinux/`) can use
+  the canonical genfs labels.
 - **SIGHUP semantics are mode-dependent (merge reconciliation):**
   `run` forwards SIGHUP to the app and exits 129 (decision #33 — there
   is no in-place rebuild of a live sandbox); the `wayland` modes

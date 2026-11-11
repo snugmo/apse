@@ -192,7 +192,7 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
     }
     // The per-instance runtime dir on the host: created before the
     // fork, so A can bind it into the fresh `/run` (it is also the
-    // future home of the tagged Wayland socket — Phase 5).
+    // home of the tagged Wayland socket).
     let runtime_dir = mounts::instance_runtime_dir(config);
     std::fs::create_dir_all(&runtime_dir)
         .with_context(|| format!("creating the per-instance runtime dir {runtime_dir}"))?;

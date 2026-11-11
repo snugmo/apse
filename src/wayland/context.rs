@@ -94,9 +94,9 @@ pub fn create_security_context(
     let qh = &event_queue.handle();
     let security_context_manager: wp_security_context_manager_v1::WpSecurityContextManagerV1 =
         globals.bind(qh, 1..=1, ()).with_context(|| {
-            "the compositor does not provide wp_security_context_manager_v1; this needs a \
-             wlroots compositor (e.g. sway) — check with `wlsinfo -t` that the global \
-             wp_security_context_manager_v1 is present"
+            "the compositor does not provide wp_security_context_manager_v1 — this needs a \
+             compositor that advertises it (a wlroots one such as sway, or KWin); check with \
+             `wlsinfo -t` that the global wp_security_context_manager_v1 is present"
         })?;
     let (reader, writer) =
         io::pipe().context("creating the reference pipe that keeps the tagged socket alive")?;

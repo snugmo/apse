@@ -173,7 +173,7 @@ root-in-ns behaviour.
 | Target | How | Notes |
 |---|---|---|
 | `/` | one-shot recursive self-bind (ro flag unattainable — #21) | new layer under the overlays below; read-only *semantics* for the app come from its real uid + nono (Phase 4); masks last |
-| `/dev` | fresh tmpfs + **bind-mount** of the host nodes `null`, `zero`, `full`, `urandom`, `random`, `tty`; `/dev/ptmx` is a **symlink** into the fresh `devpts` instance (a host bind would hand the app the host's pty master); a fresh private `/dev/shm` tmpfs (mode 1777 — the `wl_shm` path) | bind-mount, not mknod: nodes keep their canonical genfs SELinux labels (`null_t`, `urandom_t`, …) so future confined domains need plain standard `open/read/write` rules; matches the rootless-runc approach. Clear error if a host node is missing. |
+| `/dev` | fresh tmpfs + **bind-mount** of the host nodes `null`, `zero`, `full`, `urandom`, `random`, `tty`; `/dev/ptmx` is a **symlink** into the fresh `devpts` instance (a host bind would hand the app the host's pty master); a fresh private `/dev/shm` tmpfs (mode 1777 — the `wl_shm` path) | bind-mount, not mknod: nodes keep their canonical genfs SELinux labels (`null_t`, `urandom_t`, …) so the confined domains need plain standard `open/read/write` rules; matches the rootless-runc approach. Clear error if a host node is missing. |
 | `/dev/pts` | `mount devpts -o newinstance` | fresh instance, isolated from host pts |
 | `/dev/dri` | bind from host | GPU; user must be in `render` group (same requirement as rootless podman); `--no-gpu` skips |
 | `/proc` | fresh procfs mount | allowed in an unprivileged user ns (namespaced view); verify on target kernel (Phase 2) |

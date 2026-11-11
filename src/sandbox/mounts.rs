@@ -18,11 +18,11 @@
 //!    the host tree come from the app's real uid plus the nono
 //!    policy (Phase 4).
 //! 3. The volatile trees are rebuilt: `/dev` (fresh tmpfs + node
-//!    binds + a fresh devpts instance), `/sys` (fresh tmpfs + ro
-//!    binds of `devices/` and `class/` — the sysfs *mount root*
-//!    cannot be bound unprivileged, decision #18), `/run` (fresh
-//!    tmpfs carrying **only** the per-instance dir), `/tmp` (fresh
-//!    tmpfs sized by the profile).
+//!    binds + a fresh devpts instance), `/sys` (fresh tmpfs + binds
+//!    of `devices/` and `class/` — the sysfs *mount root* cannot be
+//!    bound unprivileged, decision #18; the binds are not ro, #21),
+//!    `/run` (fresh tmpfs carrying **only** the per-instance dir),
+//!    `/tmp` (fresh tmpfs sized by the profile).
 //! 4. XDG **rw** self-binds: a single plain `MS_BIND` on a path
 //!    under the ro view makes it writable again (verified on
 //!    7.2.11; the textbook bind+`MS_REMOUNT` two-step is EPERM for
@@ -47,8 +47,8 @@ use super::namespaces;
 
 /// The standard `/dev` node files carried over by bind (not
 /// `mknod`): a bind keeps the node's canonical genfs SELinux label
-/// (`null_t`, `urandom_t`, …) so a future confined domain needs plain
-/// `open/read/write` rules (AGENTS.md; matches rootless-runc).
+/// (`null_t`, `urandom_t`, …) so the SELinux module in `selinux/`
+/// needs only plain `open`/`read`/`write` rules (matches rootless-runc).
 const DEV_NODES: [&str; 6] = ["null", "zero", "full", "urandom", "random", "tty"];
 
 /// The per-instance runtime dir on the **host**
@@ -228,8 +228,8 @@ pub(crate) fn build_rootfs(cfg: &SandboxConfig) -> Result<()> {
         std::fs::create_dir_all(&d).with_context(|| format!("creating the scratch dir {d}"))?;
     }
     // Other users must not walk the scratch on the host: it carries
-    // the per-instance runtime dir (future home of the tagged
-    // Wayland socket).
+    // the per-instance runtime dir (the home of the tagged Wayland
+    // socket).
     std::fs::set_permissions(&scratch, std::fs::Permissions::from_mode(0o700))
         .with_context(|| format!("setting the mode of {scratch}"))?;
     for n in DEV_NODES {

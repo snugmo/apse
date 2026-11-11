@@ -1,6 +1,7 @@
-//! apse: an in-process sandbox for GUI apps on a wlroots Wayland
-//! desktop, plus the tagged-socket, relay, and broker that enforce
-//! per-security-context policy around it.
+//! apse: an in-process sandbox for GUI apps on a Wayland desktop
+//! (one that advertises `wp_security_context_manager_v1`), plus the
+//! tagged-socket, relay, and broker that enforce per-security-context
+//! policy around it.
 //!
 //! The binary (`src/main.rs`) is a thin CLI wrapper around the library
 //! modules below (plus binary-only modules for the in-process sandbox
