@@ -5,8 +5,11 @@
 # apse
 
 Run GUI applications (JetBrains IDEs, LibreWolf, …) in an **unprivileged
-in-process sandbox** on a **wlroots Wayland desktop** (sway, Fedora) while
-keeping the UX as close to unconfined as possible: windows are **native
+in-process sandbox** on a **Wayland desktop** (sway on Fedora is the
+reference target; the actual requirement is that the compositor
+advertises `wp_security_context_manager_v1` — see
+[compositor requirements](#compositor-requirements--verify-your-setup))
+while keeping the UX as close to unconfined as possible: windows are **native
 Wayland clients** with **GPU rendering** — no VNC, no RDP, no screen
 re-encoding, no blurry text.
 
@@ -27,10 +30,12 @@ This is a work in progress (personal-laptop target: 1–2 human users).
 ## Why `wp_security_context_v1`
 
 [wp_security_context_v1](https://wayland.app/protocols/security-context-v1)
-is a Wayland *staging* protocol from wlroots, intended for an app to give a
-*child process* its own tagged Wayland socket. apse repurposes it in the
-other direction: a **host-side** process tags a listening socket so the
-*compositor* can identify the clients that connect to it.
+is a Wayland *staging* protocol (from the wayland-protocols staging set;
+wlroots implements it, and KWin does too, independently), intended for an
+app to give a *child process* its own tagged Wayland socket. apse
+repurposes it in the other direction: a **host-side** process tags a
+listening socket so the *compositor* can identify the clients that connect
+to it.
 
 1. `apse` connects to the host compositor.
 2. It calls `wp_security_context_manager_v1.create_listener()` on a
@@ -129,14 +134,17 @@ volumes" is gone). Working as the mount namespace's root, `A` assembles:
    the app's real uid plus the nono policy instead.)
 2. `/dev` — a **fresh tmpfs** with the standard nodes (`null`, `zero`,
    `full`, `urandom`, `random`, `tty`) **bind-mounted** (not `mknod`'d, so
-   they keep their canonical genfs SELinux labels — important for a future
-   SELinux module), a **fresh `devpts` instance** isolated from the host's
+   they keep their canonical genfs SELinux labels — what the SELinux module
+   in `selinux/` needs for plain `open`/`read` rules), a **fresh `devpts`
+   instance** isolated from the host's
    pts (`/dev/ptmx` is a symlink into it — binding the host's would hand
    the app the host's pty master), a **fresh private `/dev/shm`** (a
    `tmpfs`, mode 1777 — the `wl_shm` shared-memory path), and — with GPU
    on — `/dev/dri` bound from the host.
-3. `/sys` — a fresh tmpfs with read-only binds of `devices/` and `class/`
-   (all a GUI app needs for PCI/DRM discovery).
+3. `/sys` — a fresh tmpfs with binds of `devices/` and `class/` (not
+   read-only — decision #21, as with the self-bind; the sysfs *mount root*
+   cannot be bound unprivileged, decision #18) — all a GUI app needs for
+   PCI/DRM discovery.
 4. `/run` — a fresh tmpfs carrying **only** the per-instance dir
    (`/run/user/<uid>/apse/<app>-<instance>`), whose contents arrive from
    a build scratch on `/var/tmp`. The host's own Wayland sockets sit
@@ -213,9 +221,11 @@ both ends. On the way *in* from the app it can apply:
 
 - **`--allow-globals=<iface,…>`** — hide every other global from the
   registry and reject a bind of any name the app was never shown
-  (`wl_display.error` `invalid_object`). When *unset* the relay is a
-  pass-through and shows all globals (an empty list is treated as "all",
-  not "none").
+  (`wl_display.error` `invalid_object`). When the flag is *unset* the relay
+  is a pass-through and shows all globals. An explicitly *empty* value
+  (`--allow-globals=`, no entries) is the opposite: an active allowlist that
+  shows **no** globals — it hides everything, since an active-but-empty set
+  allows nothing.
 - **`--clipboard-policy=deny`** (default `allow`) — the **selection
   receive-gate**: a `receive` request is forwarded only if the selection
   behind it was put on by the app itself (inferred from the protocol
@@ -504,9 +514,12 @@ LogDriver=passthrough
 
 ## Compositor requirements & verify your setup
 
-- The compositor must be **wlroots-based** (e.g. sway) and must provide the
-  staging global `wp_security_context_manager_v1`. If it does not,
-  `apse` exits with an actionable error pointing at the check below.
+- The compositor must provide the staging global
+  `wp_security_context_manager_v1`. Every **wlroots**-based compositor that
+  exposes it qualifies (sway, wayfire, river), and KWin has an independent
+  implementation — but GNOME/mutter has none (its privileged operations are
+  only on D-Bus-originated connections), so it is not a target. If it is
+  absent, `apse` exits with an actionable error pointing at the check below.
 - The compositor must be willing to enforce per-context policy on
   security-context clients (that is what makes this more than labelling)
   and must not re-expose the manager to a tagged client (the nesting
@@ -640,8 +653,10 @@ MCS layer is process-level, not file-level (objects created under the
 `ssh-agent` forwarding instead: keep the agent on the host, run
 `ssh-add --constrain usage=sign,confirm=yes <key>` (so even a compromised
 agent client cannot ask the key for decryption or use it without
-confirmation), and — once a D-Bus/socket path exists — allow the host's
-`$SSH_AUTH_SOCK` via the profile's `unix_sockets`.
+confirmation), and let the app reach the agent's socket: list the host's
+`$SSH_AUTH_SOCK` in the profile's `unix_sockets` (the Landlock connect
+grant), with the socket's path also bound into the rootfs (the fresh `/run`
+carries only the per-instance dir).
 
 ## Known gaps / WIP
 
@@ -652,12 +667,12 @@ confirmation), and — once a D-Bus/socket path exists — allow the host's
   hanging. The Phase 5.5 Firefox e2e (browser + gecko/socket children)
   ran and exited cleanly; the remaining caveat is app-internal pipe
   behaviour, not a supervisor gap.
-- **FOOT/PTY: `EACCES` from `devpts` inside the userns.** A fresh
-  `devpts` instance is mounted, but opening a *new* pt from inside an
-  unprivileged user namespace is rejected by the kernel on this system —
-  terminals that allocate a fresh PTY can fail with `EACCES`. It is a
-  kernel-level restriction, not a policy one; under test we use a
-  pre-allocated path instead.
+- **FOOT/PTY works (decision #39).** The fresh `devpts` instance is mounted
+  `MS_NOSUID` only — never `MS_NODEV` — so a terminal that allocates a fresh
+  PTY inside the userns works. (The earlier `EACCES` was apse's own
+  `MS_NODEV` on that mount — the VFS `may_open_dev` gate, decided before any
+  LSM hook — not a kernel/userns restriction; `foot` runs clean through the
+  relay, v2.14.)
 - **A `read` during a drag is labelled by its protocol, not its drag.**
   The `set` of a `start_drag` and the `serve` records on the active drag
   source are both labelled `selection=drag` (the relay tracks the active
