@@ -75,6 +75,8 @@
 (typeattributeset cil_gen_require sysctl_t)
 (typeattributeset cil_gen_require sysctl_vm_t)
 (typeattributeset cil_gen_require sysctl_vm_overcommit_t)
+(typeattributeset cil_gen_require sysctl_crypto_t)
+(typeattributeset cil_gen_require cert_t)
 (typeattributeset mcs_constrained_type (apse_t apse_app_t apse_shim_t))
 ; this kernel's process class splits `signal` into signull (kill 0),
 ; sigkill and signal. The base policy's mlsconstrain list constrains
@@ -529,10 +531,11 @@
 (allow apse_app_t usr_t (file (entrypoint execute execute_no_trans getattr map open read)))
 ; the app resolves and stats the system trees it execs from
 ; (path lookup = search on every dir of the path; stat = getattr;
-; symlinked components = lnk_file read — without these even
-; `stat /` and PATH lookup fail):
+; symlinked components = lnk_file read for readlink, and — on this
+; kernel — a distinct `getattr` for `stat()` through the link;
+; without these even `stat /` and PATH lookup fail):
 (allow apse_app_t bin_t (dir (getattr search)))
-(allow apse_app_t bin_t (lnk_file (read)))
+(allow apse_app_t bin_t (lnk_file (getattr read)))
 ; `read` (readdir) covers fontconfig's enumeration of the
 ; conf.d-style dirs under /usr/share (conf.avail) — a plain
 ; stat (getattr) cannot list their entries.
@@ -584,9 +587,13 @@
 ; ls formatting mtimes: tzset reads /etc/localtime, a symlink
 ; (labeled locale_t, not etc_t) into the zoneinfo tree
 (allow apse_app_t locale_t (lnk_file (read)))
-; `getattr` on the lib dirs: import mechanisms (python) stat the
-; search paths before traversing them
-(allow apse_app_t lib_t (dir (getattr search)))
+; the lib dirs: import mechanisms (python) stat, open *and*
+; enumerate (readdir) the search-path directories — a FileFinder
+; opens a dir to list its contents and resolve a submodule, so
+; enforcing mode needs `open` and `read` here, not just
+; `getattr`/`search` (the open() path checks both: inode_permission
+; first, then the file_open hook)
+(allow apse_app_t lib_t (dir (getattr open read search)))
 (allow apse_app_t lib_t (lnk_file (read)))
 ; /proc/sys: platform/runtime introspection (read-only; the values
 ; are kernel-constant, not instance data)
@@ -597,6 +604,15 @@
 ; `/proc/sys/vm/overcommit_memory` has its own type; glibc's malloc
 ; runtime tuning reads it
 (allow apse_app_t sysctl_vm_overcommit_t (file (getattr open read)))
+; `/proc/sys/crypto` is its own type (the FIPS and af_alg kernel
+; knobs); the app's runtimes probe it at init
+(allow apse_app_t sysctl_crypto_t (dir (getattr search)))
+(allow apse_app_t sysctl_crypto_t (file (getattr open read)))
+; /etc/pki and /etc/ssl (all `cert_t`): OpenSSL's CA trust tree —
+; libcrypto probes it at init; read-only, the app never writes
+; trust data
+(allow apse_app_t cert_t (dir (getattr open read search)))
+(allow apse_app_t cert_t (file (getattr open read)))
 (allow apse_app_t usr_t (dir (search)))
 ; VFS superblock objects are stat'd during path lookup on some
 ; mount types (`filesystem getattr`)
