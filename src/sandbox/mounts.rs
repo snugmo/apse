@@ -244,6 +244,20 @@ fn chroot(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// `chdir(2)` — used by B to point the app's working directory at a
+/// path that actually exists inside the sandbox before the exec (the
+/// inherited CWD can be a host path the rootfs build replaced;
+/// decision #43). Decision #17: the path crosses into C via [cstr].
+pub(crate) fn chdir(path: &str) -> Result<()> {
+    let p = cstr(path);
+    // SAFETY: a valid NUL-terminated path.
+    let rc = unsafe { libc::chdir(p.as_ptr().cast()) };
+    if rc != 0 {
+        bail!("chdir({path}): {}", io::Error::last_os_error())
+    }
+    Ok(())
+}
+
 fn env_or(var: &str, fallback: &str) -> String {
     std::env::var(var).unwrap_or_else(|_| fallback.to_string())
 }

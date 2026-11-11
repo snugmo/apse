@@ -425,6 +425,40 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
                         // namespaced (the app is PID 1).
                         mounts::mount_namespaced()?;
                         userns::verify_locked(&creds)?;
+                        // The app's CWD (private-home mode,
+                        // decision #43). B inherits S's CWD — the
+                        // host's launch dir — which sits under the
+                        // real home and no longer resolves once the
+                        // rootfs build replaces the real home with
+                        // the private tree. An app that forks and
+                        // `chdir(cwd)`s before its exec (foot's
+                        // slave) then dies on the bad chdir before it
+                        // ever reaches the exec. Point the CWD at the
+                        // app's home instead: the `$HOME` string
+                        // resolves through the rootfs binds to the
+                        // private home. Done here, before the
+                        // seccomp-notify filter and the Landlock floor
+                        // are installed (either could mediate a
+                        // chdir): the mount namespace is already up
+                        // (inherited from A), so the target resolves
+                        // to the private tree. In host mode the
+                        // inherited CWD is a real, existing path and
+                        // is left as is.
+                        if config.profile.private_home() {
+                            let home = std::env::var("HOME").unwrap_or_default();
+                            let target =
+                                if !home.is_empty() && std::path::Path::new(&home).is_dir() {
+                                    home
+                                } else {
+                                    String::from("/")
+                                };
+                            if let Err(e) = mounts::chdir(&target) {
+                                warn!(
+                                    "B: chdir to the app's home ({target}) failed: {e}; \
+                                     the app keeps the inherited CWD"
+                                );
+                            }
+                        }
                         // Phase 8.2 (MCS): carry the instance's
                         // category into the app's exec (the module's
                         // `apse_t → apse_app_t` dyntransition).
