@@ -125,8 +125,12 @@ phase 8.1).**
   not inherit it); the handler only sets a flag, and the delivery's
   `EINTR` makes `waitpid_retry` escape so A kills B and exits 137;
   B re-arms its own link pre-exec and, in confined mode, an
-  `LD_PRELOAD` shim re-arms it across the exec (see `pdeathsig.rs`)
-  — sd-notify, #33)
+  `LD_PRELOAD` shim re-arms it across the exec (see `pdeathsig.rs`);
+  in private-home mode (#43) B also `chdir`s to the app's home
+  before the exec — the inherited CWD is the host's launch dir, which
+  the build replaces, and fork+`chdir(cwd)`+exec apps (foot's
+  `slave_spawn`) would otherwise die on the vanished path — sd-notify,
+  #33)
 - `src/profile/` — per-app TOML profiles (`gpu`, `ro_binds`, `rw_binds`,
   `mask`, `env`, …; `deny_unknown_fields`)
 - `src/systemd.rs` — the transient session-bus scope (phase 6.1, #35)
