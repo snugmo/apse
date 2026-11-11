@@ -954,3 +954,19 @@ audited as a write).
   runs headlessly. Not a blocker for the current suite — the other
   sandbox tests need only the `run` pipeline, which works without a
   compositor.
+- **AppArmor as the confinement layer (no-SELinux targets, e.g.
+  Ubuntu/Debian)**: parked design sketch in `docs/apparmor.md`
+  (2026-11-11). The baseline needs zero changes — the unconfined
+  mode already works on AppArmor machines (CI's `ubuntu-latest`
+  runner is one), so this is purely the phase-8.2-analogue second
+  layer: three path-based profiles (`apse`/`apse_app`/
+  `apse_xserver`), an exec-transition backend replacing
+  `/proc/self/attr/exec` (write
+  `/proc/self/attr/apparmor/current` +
+  `prctl(PR_SET_SECURECOMPUTING, 1)`), and no MCS equivalent
+  (accepted — the pidns already isolates the apps, and the
+  host-side signal gap equals today's unconfined behavior). The one
+  open question that shapes the work: whether AppArmor's exec hook
+  sets `bprm->secureexec` on a `change_profile` transition (the
+  same clear the pdeathsig shim exists for) — a 10-line probe
+  answers it (§2.2 of the doc).

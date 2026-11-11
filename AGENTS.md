@@ -191,6 +191,13 @@ phase 8.1).**
 - `docs/postmortems/` — full write-ups of significant bugs/fixes (one
   per incident), referenced from `LESSONS.md`; currently the
   fd-misrouting post-mortem
+- `docs/apparmor.md` — design sketch for an AppArmor confinement
+  layer (the no-SELinux analogue of `selinux/`): parked future
+  item; the unconfined baseline already works on AppArmor machines
+  (CI's ubuntu runner is one), so this is the second layer only —
+  three path-based profiles, a `change_profile` exec-transition
+  backend, no MCS equivalent; the open question (does a
+  `change_profile` exec clear `PR_SET_PDEATHSIG`?) is in §2.2
 - `assets/` — logos/headers. The header SVG lettering (wordmark and
   tagline) is baked from Open Sans (Bold / Regular) — one `<path>` per
   glyph, no `<text>` anywhere — so regenerate it with
@@ -402,7 +409,11 @@ phase 8.1).**
   enforcing, kernel 7.2.15: the Xwayland satellite boots the
   server to a full session, real X clients work through the
   per-instance socket, teardown is clean, zero denials — LESSONS
-  #45-#46.)
+  #45-#46.) The AppArmor second-layer design (the no-SELinux
+  analogue; baseline needs no changes on AppArmor machines) is
+  parked in `docs/apparmor.md` — the open question that shapes it
+  (a `change_profile` exec clearing `PR_SET_PDEATHSIG`) is in
+  §2.2.
 
 ## Commit conventions
 
