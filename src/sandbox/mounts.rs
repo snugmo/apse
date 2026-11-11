@@ -23,10 +23,16 @@
 //!    bound unprivileged, decision #18; the binds are not ro, #21),
 //!    `/run` (fresh tmpfs carrying **only** the per-instance dir),
 //!    `/tmp` (fresh tmpfs sized by the profile).
-//! 4. XDG **rw** self-binds: a single plain `MS_BIND` on a path
-//!    under the ro view makes it writable again (verified on
-//!    7.2.11; the textbook bind+`MS_REMOUNT` two-step is EPERM for
-//!    mounts we do not own — and unnecessary).
+//! 4. The app's **home and XDG dirs**: by default (decision #43)
+//!    the per-app state tree (carried into the scratch in step 1)
+//!    is bound over `$HOME` and the XDG locations — the app's home
+//!    is a private dir, persistent across runs and disconnected
+//!    from the real home; with the profile's `home = "host"` the
+//!    standard set is instead rw self-bound. A single plain
+//!    `MS_BIND` on a path under the self-bound `/` makes it
+//!    writable again (verified on 7.2.11; the textbook
+//!    bind+`MS_REMOUNT` two-step is EPERM for mounts we do not own
+//!    — and unnecessary).
 //! 5. Masks: an empty tmpfs over the paths the app must not see.
 //! 6. `chroot("/")` into the assembled root.
 //!
@@ -90,6 +96,113 @@ pub(crate) fn instance_runtime_dir(cfg: &SandboxConfig) -> String {
         "{xdg}/apse/{}",
         namespaces::cgroup_name_for(&cfg.app_id, &cfg.instance_id)
     )
+}
+
+/// The per-app state root on the **host**:
+/// `$XDG_STATE_HOME/apse/<app-id>` (the default XDG state dir is
+/// `$HOME/.local/state`) — the home of the app's *private* home and
+/// XDG dirs (decision #43): the `home/`, `config/`, `cache/`,
+/// `data/` and `state/` subdirs that the rootfs build binds over the
+/// standard locations, so the app's `$HOME` is persistent across
+/// runs and disconnected from the real home and the host desktop
+/// (the container-era per-app home volume, re-implemented as binds).
+///
+/// It is **per-app, not per-instance**: the instance's ephemera
+/// (the tagged socket, `/tmp`) live in the per-instance runtime dir;
+/// the state tree is what survives between runs of the same app.
+/// Created by S before the first fork ([prepare_app_state]) and
+/// never removed by a run — it *is* the app's persistent state.
+pub(crate) fn app_state_dir(cfg: &SandboxConfig) -> Result<String> {
+    let home = std::env::var("HOME").context("HOME is required to locate the per-app state dir")?;
+    let xdg = std::env::var("XDG_STATE_HOME").unwrap_or_else(|_| format!("{home}/.local/state"));
+    Ok(format!("{xdg}/apse/{}", cfg.app_id))
+}
+
+/// Create the app's private state tree (decision #43): the state
+/// root, its five content subdirs, and — for every home/XDG target
+/// that sits under the home — the matching subpath *inside the
+/// private home* (the bind targets of step 7), all mode 0700. Runs
+/// in S on the host, before any fork; idempotent (the tree is
+/// persistent app state and a run never removes it).
+pub(crate) fn prepare_app_state(cfg: &SandboxConfig) -> Result<()> {
+    if !cfg.profile.private_home() {
+        return Ok(());
+    }
+    let root = app_state_dir(cfg)?;
+    let home = std::env::var("HOME").context("HOME is required for the private home")?;
+    let mut dirs = vec![root.clone()];
+    for sub in ["home", "config", "cache", "state", "data"] {
+        dirs.push(format!("{root}/{sub}"));
+    }
+    for b in home_xdg_targets(&home) {
+        if b.under_home && b.sub != "home" {
+            let rel = b
+                .target
+                .strip_prefix(home.as_str())
+                .unwrap()
+                .trim_start_matches('/');
+            dirs.push(format!("{root}/home/{rel}"));
+        }
+    }
+    for d in &dirs {
+        std::fs::create_dir_all(d).with_context(|| format!("creating {d}"))?;
+        std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("setting the mode of {d}"))?;
+    }
+    Ok(())
+}
+
+/// One home/XDG bind of the private-home model (decision #43): the
+/// target as the app sees it inside the sandbox, the state-tree
+/// subdir supplying its content, and whether the target is a
+/// subpath of the home.
+#[derive(Clone, Debug)]
+pub(crate) struct XdgBind {
+    pub target: String,
+    /// `home`, `config`, `cache`, `data` or `state` — the subdir of
+    /// the per-app state tree that becomes this path's content.
+    pub sub: &'static str,
+    /// The target is a subpath of the home: S pre-creates it inside
+    /// the private home (the bind is unconditional and lands in the
+    /// private tree). A target outside the home (a custom XDG) is a
+    /// real host path, bound only when it exists (the legacy guard).
+    pub under_home: bool,
+}
+
+/// The app's home/XDG bind set (decision #43), in bind order: the
+/// home first, then config, cache, data, and **state last** —
+/// `XDG_STATE_HOME` may nest under `XDG_DATA_HOME` (e.g.
+/// `$XDG_DATA_HOME/state`), and each target must resolve after the
+/// binds beneath it.
+///
+/// The targets are the env-derived strings *unchanged*: the app's
+/// environment keeps its historical values, so the redirect is
+/// invisible to the app (the in-sandbox path simply resolves to the
+/// private tree instead of the real one).
+pub(crate) fn home_xdg_targets(home: &str) -> Vec<XdgBind> {
+    let entry = |var: &str, suffix: &str, sub: &'static str| XdgBind {
+        target: env_or(var, &format!("{home}/{suffix}")),
+        sub,
+        under_home: false,
+    };
+    let mut v = vec![XdgBind {
+        target: home.to_string(),
+        sub: "home",
+        under_home: true,
+    }];
+    for (var, suffix, sub) in [
+        ("XDG_CONFIG_HOME", ".config", "config"),
+        ("XDG_CACHE_HOME", ".cache", "cache"),
+        ("XDG_DATA_HOME", ".local/share", "data"),
+        ("XDG_STATE_HOME", ".local/state", "state"),
+    ] {
+        let mut e = entry(var, suffix, sub);
+        e.under_home = e.target.len() > home.len()
+            && e.target.starts_with(home)
+            && e.target.as_bytes()[home.len()] == b'/';
+        v.push(e);
+    }
+    v
 }
 
 /// Decision #17: NUL-terminate every path that crosses into C.
@@ -224,6 +337,7 @@ pub(crate) fn build_rootfs(cfg: &SandboxConfig) -> Result<()> {
         format!("{scratch}/sys/devices"),
         format!("{scratch}/sys/class"),
         format!("{scratch}/runtime"),
+        format!("{scratch}/state"),
     ] {
         std::fs::create_dir_all(&d).with_context(|| format!("creating the scratch dir {d}"))?;
     }
@@ -269,6 +383,24 @@ pub(crate) fn build_rootfs(cfg: &SandboxConfig) -> Result<()> {
         libc::MS_BIND,
         "",
     )?;
+    // The per-app state tree (decision #43), carried the same way:
+    // its host path sits under the real home (the default
+    // `XDG_STATE_HOME` is `$HOME/.local/state`), which step 7
+    // replaces with the private home — a source resolved *after*
+    // that bind would hit the private copy and could never reach
+    // back to the host tree. (The runtime-dir carry is the same
+    // trap one level up, decision #28.)
+    if prof.private_home() {
+        let state_root = app_state_dir(cfg)?;
+        mount(
+            &state_root,
+            &format!("{scratch}/state"),
+            "none",
+            libc::MS_BIND,
+            "",
+        )
+        .with_context(|| format!("carrying the per-app state tree {state_root}"))?;
+    }
 
     // 2) A new layer over the whole tree (one-shot recursive
     //    self-bind — verified unprivileged on 7.2.11). Not ro:
@@ -380,20 +512,49 @@ pub(crate) fn build_rootfs(cfg: &SandboxConfig) -> Result<()> {
     };
     mount("none", "/tmp", "tmpfs", 0, &data)?;
 
-    // 7) XDG rw self-binds: the standard set (always) plus the
-    //    profile's extras. A single plain `MS_BIND` over the ro view
-    //    makes the path writable again — verified on 7.2.11 (no
-    //    `MS_REMOUNT` step: that is EPERM for mounts we do not own,
-    //    and unnecessary).
-    let mut dirs = vec![
-        home.clone(),
-        env_or("XDG_CONFIG_HOME", &format!("{home}/.config")),
-        env_or("XDG_CACHE_HOME", &format!("{home}/.cache")),
-        env_or("XDG_STATE_HOME", &format!("{home}/.local/state")),
-        env_or("XDG_DATA_HOME", &format!("{home}/.local/share")),
-    ];
-    dirs.extend(prof.rw_binds.iter().cloned());
-    for d in &dirs {
+    // 7) The app's home and XDG dirs.
+    //
+    //    `home = "private"` (the default, decision #43): the
+    //    per-app state tree (carried into the scratch in step 1) is
+    //    bound over the standard locations — the app's `$HOME` is
+    //    its own private dir, persistent across runs and
+    //    disconnected from the real home and the host desktop. The
+    //    home bind goes first; a XDG target under the home is
+    //    resolved *through* that bind, so its content lands in the
+    //    private tree.
+    //
+    //    `home = "host"`: the legacy rw self-binds of the real
+    //    home and XDG dirs. In both modes the profile's `rw_binds`
+    //    layer on top. A single plain `MS_BIND` over the
+    //    self-bound `/` makes the path writable again — verified on
+    //    7.2.11 (no `MS_REMOUNT` step: that is EPERM for mounts we
+    //    do not own, and unnecessary).
+    if prof.private_home() {
+        for b in home_xdg_targets(&home) {
+            let src = format!("{scratch}/state/{}", b.sub);
+            // A target under the home was pre-created by S inside
+            // the private home: the bind is unconditional. A target
+            // outside the home is a real host path: bound only when
+            // it exists (the legacy guard).
+            if b.under_home || Path::new(&b.target).is_dir() {
+                mount(&src, &b.target, "none", libc::MS_BIND, "")
+                    .with_context(|| format!("binding the {} dir", b.sub))?;
+            }
+        }
+    } else {
+        for d in [
+            home.clone(),
+            env_or("XDG_CONFIG_HOME", &format!("{home}/.config")),
+            env_or("XDG_CACHE_HOME", &format!("{home}/.cache")),
+            env_or("XDG_STATE_HOME", &format!("{home}/.local/state")),
+            env_or("XDG_DATA_HOME", &format!("{home}/.local/share")),
+        ] {
+            if Path::new(&d).is_dir() {
+                mount(&d, &d, "none", libc::MS_BIND, "")?;
+            }
+        }
+    }
+    for d in &prof.rw_binds {
         if Path::new(d).is_dir() {
             mount(d, d, "none", libc::MS_BIND, "")?;
         }
@@ -625,23 +786,40 @@ mod tests {
             nix::unistd::getuid().as_raw().to_string(),
             "the in-ns uid must be the real uid:\n{out}"
         );
-        // / is not masked away and the XDG rw self-bind worked: the
-        // home dir is writable from the app (the probe uses $HOME
-        // from the inherited environment).
+        // / is not masked away and the app's $HOME is its private
+        // per-app home (decision #43): the write lands in the
+        // per-app state tree on the host ($XDG_STATE_HOME/apse/
+        // <app>/home/), disconnected from the real home. The probe
+        // uses $HOME from the inherited environment; the state tree
+        // is computed here exactly as S computes it (same env).
+        let host = std::env::var("HOME").unwrap_or_default();
+        let xdg =
+            std::env::var("XDG_STATE_HOME").unwrap_or_else(|_| format!("{host}/.local/state"));
+        let private_home = format!("{xdg}/apse/app/home");
         let (code2, out2, err2) = run_cmd(
             &[
                 "/bin/sh",
                 "-c",
-                "touch \"$HOME/apse-write-probe\" && rm -f \"$HOME/apse-write-probe\" && echo ok || echo fail",
+                "touch \"$HOME/apse-write-probe\" && echo ok || echo fail",
             ],
             &cfg("app", "2", false),
         );
-        if expect_ok(code2, &out2, &err2, "XDG rw self-bind") {
+        if expect_ok(code2, &out2, &err2, "private home") {
             assert_eq!(
                 out2.trim(),
                 "ok",
-                "the XDG rw self-bind must make $HOME writable:\n{out2}"
+                "the private $HOME must be writable:\n{out2}"
             );
+            let landed = format!("{private_home}/apse-write-probe");
+            assert!(
+                Path::new(&landed).is_file(),
+                "the write must land in the per-app state tree: {landed}"
+            );
+            assert!(
+                !Path::new(&format!("{host}/apse-write-probe")).exists(),
+                "the write must not reach the real home"
+            );
+            let _ = std::fs::remove_file(&landed);
         }
     }
 

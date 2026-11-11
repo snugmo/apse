@@ -196,6 +196,14 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
     let runtime_dir = mounts::instance_runtime_dir(config);
     std::fs::create_dir_all(&runtime_dir)
         .with_context(|| format!("creating the per-instance runtime dir {runtime_dir}"))?;
+    // The per-app private state tree on the host (decision #43):
+    // the app's home and XDG dirs, per app, persistent across runs
+    // and disconnected from the real home. Created before the fork
+    // so A's step-1 carry sees it (like the runtime dir, it sits
+    // under a tree the build later replaces — the default state
+    // dir is inside the real home). Never removed on exit: it is
+    // the app's state.
+    mounts::prepare_app_state(config)?;
     // decision #42: the pdeathsig-restore shim (B's post-exec
     // re-arm; see `apse::pdeathsig`), built here — before any
     // fork — into the instance runtime dir, which the rootfs carry

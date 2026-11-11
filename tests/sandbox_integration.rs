@@ -10,12 +10,15 @@
 //!   hostname;
 //! * **the rebuilt rootfs** — fresh `/dev` (only the standard
 //!   nodes), fresh `/sys` (`/sys/fs` empty), fresh `/run` (only the
-//!   per-instance tree), fresh `/tmp`, a namespaced `/proc`;
+//!   per-instance tree), fresh `/tmp`, a namespaced `/proc`; the
+//!   app's `$HOME` is a private per-app tree disconnected from the
+//!   real home (decision #43);
 //! * **the Landlock floor** — writes denied outside the granted
 //!   subtrees (the user-owned but ungranted `/run/user/<uid>`
-//!   root) and allowed inside them (the instance dir, `/tmp`),
-//!   read-granted paths unwritable; the seccomp filter active
-//!   (`PR_GET_SECCOMP` reports the filter mode);
+//!   root) and allowed inside them (the instance dir, `/tmp`, the
+//!   private per-app `$HOME`, decision #43), read-granted paths
+//!   unwritable; the seccomp filter active (`PR_GET_SECCOMP`
+//!   reports the filter mode);
 //! * **the network** — `shared` keeps the host netns (a host-side
 //!   listener is reachable through loopback); `--network=none`
 //!   denies `bind`/`connect` (even on loopback) and its netns
@@ -148,6 +151,11 @@ ru = "/run/user/%d" % os.getuid()
 print("RUN_USER=" + "|".join(sorted(os.listdir(ru))))
 inst = ru + "/apse/" + os.environ["APSE_TEST_INST"]
 print("RUN_INST=" + ("DIR" if os.path.isdir(inst) else "ABSENT"))
+# The app's $HOME is its private per-app home (decision #43): a
+# marker planted in the *real* home by the test must not be visible
+# through it.
+home = os.environ.get("HOME", "")
+print("SEES_MARKER=" + ("YES" if os.path.exists(home + "/.apse-hermetic-probe") else "NO"))
 "#;
 
 /// The probe: the Landlock floor and the seccomp filter.
@@ -170,6 +178,9 @@ attempt("RUNUSER_WRITE", ru + "/apse-probe-deny")
 # granted subtrees
 attempt("INST_WRITE", inst + "/probe-ok")
 attempt("TMP_WRITE", "/tmp/apse-probe-tmp")
+# the app's $HOME is its private per-app home (decision #43):
+# write-granted (it is the app's state)
+attempt("HOME_WRITE", os.environ.get("HOME", "") + "/apse-probe-home")
 # read-granted, not write-granted
 attempt("ETC_WRITE", "/etc/apse-probe-deny")
 "#;
@@ -440,6 +451,12 @@ fn identity_is_namespaced() {
 
 #[test]
 fn rootfs_is_rebuilt_not_masked() {
+    // Decision #43: the app's $HOME is its private per-app home,
+    // disconnected from the real home. Plant a marker in the real
+    // home; the probe must not see it through its $HOME.
+    let home = std::env::var("HOME").unwrap_or_default();
+    let marker = format!("{home}/.apse-hermetic-probe");
+    let planted = Path::new(&home).is_dir() && std::fs::write(&marker, b"hermetic").is_ok();
     let run = expect_ok(run_probe("it-fs", &[], &[], ROOTFS), "the rootfs probe");
     for (k, want) in [
         ("MT_DEV", "tmpfs"),
@@ -487,6 +504,15 @@ fn rootfs_is_rebuilt_not_masked() {
         "the per-instance dir is not in the sandbox at its systemd-standard path:\n{}",
         run.out
     );
+    if planted {
+        assert_eq!(
+            kv(&run.out, "SEES_MARKER"),
+            Some("NO"),
+            "the real home is visible through the app's $HOME (decision #43: it must be a private tree):\n{}",
+            run.out
+        );
+        let _ = std::fs::remove_file(&marker);
+    }
     clean_instance("it-fs");
 }
 
@@ -517,6 +543,32 @@ fn landlock_denies_outside_the_grants() {
         "a write inside the granted /tmp failed:\n{}",
         run.out
     );
+    assert_eq!(
+        kv(&run.out, "HOME_WRITE"),
+        Some("OK"),
+        "a write inside the private $HOME failed (decision #43):\n{}",
+        run.out
+    );
+    // The private home is the per-app state tree: the write lands
+    // under $XDG_STATE_HOME/apse/<app>/home/ on the host, never in
+    // the real home (computed exactly as the supervisor does — same
+    // env).
+    let home = std::env::var("HOME").unwrap_or_default();
+    let xdg = std::env::var("XDG_STATE_HOME").unwrap_or_else(|_| format!("{home}/.local/state"));
+    let landed = Path::new(&xdg)
+        .join("apse")
+        .join(APP)
+        .join("home")
+        .join("apse-probe-home");
+    assert!(
+        landed.is_file(),
+        "the home write did not land in the per-app state tree: {landed:?}"
+    );
+    assert!(
+        !Path::new(&format!("{home}/apse-probe-home")).exists(),
+        "the home write reached the real home (it must be disconnected): {home}"
+    );
+    let _ = std::fs::remove_file(&landed);
     assert_eq!(
         kv(&run.out, "ETC_WRITE"),
         Some("ERR:13"),
