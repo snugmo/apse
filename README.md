@@ -77,7 +77,7 @@ Containment is layered:
 | Layer | What it blocks |
 |---|---|
 | Unprivileged user namespace | the app is its **real uid** — never root, never another user. The single-extent self-map (`<uid> <uid> 1`) leaves in-ns `0` *unmapped*, so no `setuid`/`setgid` to a privileged id is possible and there is no privilege escalation path |
-| Private rootfs (mount namespace) | other users' homes, `/root`, `/boot`, `/var`, `/srv`, `/media`, `/mnt` are **masked** (empty tmpfs); the app sees its own XDG dirs writable and everything else read-only (a recursive self-bind of `/` is the base) |
+| Private rootfs (mount namespace) | other users' homes, `/root`, `/boot`, `/var`, `/srv`, `/media`, `/mnt` are **masked** (empty tmpfs); the app's `$HOME` and XDG dirs are a **private per-app state tree** (decision #43) and everything else read-only (a recursive self-bind of `/` is the base) |
 | Landlock (nono) | a **default-deny** filesystem floor: even paths the rootfs *shows* (e.g. `/etc`) cannot be opened or written outside the grants; AF_UNIX sockets are restricted to the per-instance dir (plus a profile's explicit sockets) |
 | seccomp-notify (nono) | `openat`, `connect`, `bind`, … are routed to the supervisor and **auto-denied** by default — the choke point for both file and network |
 | cgroup + cgroup namespace | the app lives in its own per-instance sub-cgroup and sees only `0::/`; scoped under systemd (via D-Bus) for visibility/accounting, or a raw-cgroup fallback |
@@ -151,9 +151,16 @@ volumes" is gone). Working as the mount namespace's root, `A` assembles:
    directly under `$XDG_RUNTIME_DIR` and are deliberately *invisible*
    here — the app can reach only the tagged socket.
 5. `/tmp` — a fresh tmpfs, sized by the profile (`tmp_size_mib`).
-6. The standard **XDG rw self-binds** (`$HOME`, `$XDG_CONFIG_HOME`,
-   `$XDG_CACHE_HOME`, `$XDG_STATE_HOME`, `$XDG_DATA_HOME`) plus the
-   profile's `rw_binds`.
+6. The app's **home and XDG dirs** (decision #43): by default a
+   **private per-app state tree** under
+   `$XDG_STATE_HOME/apse/<app-id>/` (home, config, cache, data, state
+   subdirs — persistent across runs, disconnected from the real home
+   and the host desktop: the container-era per-app home volume,
+   re-implemented as binds) is bound over `$HOME` and the XDG
+   locations; with the profile's `home = "host"`, the standard set
+   (`$HOME`, `$XDG_CONFIG_HOME`, `$XDG_CACHE_HOME`, `$XDG_STATE_HOME`,
+   `$XDG_DATA_HOME`) is rw self-bound instead. The profile's
+   `rw_binds` layer on top in both modes.
 7. **Masks** — empty tmpfs over `/root`, `/boot`, `/var`, `/srv`,
    `/media`, `/mnt`, every other user's `/home/*`, and `/opt/*` except the
    app's own dir, plus the profile's `mask`.
@@ -409,12 +416,19 @@ it never silently degrades the sandbox. All path fields are absolute
 gpu = true                 # build /dev/dri in the sandbox (CLI --no-gpu overrides)
 tmp_size_mib = 2048        # size of the fresh /tmp (0 = kernel default)
 
+# The app's $HOME and XDG dirs (decision #43): "private" (default) —
+# its own per-app state tree under $XDG_STATE_HOME/apse/<app-id>/
+# (persistent, disconnected from the real home and the host desktop);
+# "host" — the real $HOME and XDG dirs are rw self-bounds.
+home = "private"
+
 # Everything under / is already read-only from the self-bind; ro_binds
 # document the app's install dir and exempt it from the /opt/* mask.
 ro_binds = ["/opt/rustrover"]
 
-# Extra writable self-binds, on top of the standard XDG set
-# ($HOME, config, cache, state, data).
+# Extra writable self-binds, on top of the app's home/XDG set
+# (the private per-app tree by default, the real dirs with
+# home = "host").
 rw_binds = []
 
 # Extra paths to mask (an empty tmpfs over them), on top of the
@@ -560,8 +574,10 @@ tagged socket.
 
 **What apse protects:** the host filesystem (other users' homes,
 `/root`, `/var`, `/srv`, `/media`, `/mnt` are masked; everything else is
-read-only by the self-bind *and* default-denied by Landlock; the app keeps
-its own real XDG dirs writable, as its real uid); privilege escalation
+read-only by the self-bind *and* default-denied by Landlock; the app's
+`$HOME` and XDG dirs are its **private per-app state tree** — writable
+and persistent, but disconnected from the real home and the host
+desktop, decision #43); privilege escalation
 (the single-extent user-namespace self-map leaves root unmapped); the host
 process tree (the app is PID 1 of its own pidns, signals isolated);
 privileged Wayland globals (compositor per-context policy via the tagged
@@ -613,14 +629,17 @@ MCS layer is process-level, not file-level (objects created under the
   `/dev/dri/renderD*` nodes (bind-mounted) for native rendering. A bug in
   the GPU stack (driver/firmware) is an escape path this project does not
   mitigate — that is the price of "no VNC, no re-encoding".
-- **Your own home directory.** Unlike the container era (where the XDG
-  dirs were *pod volumes*, not the real homedir), the sandboxed app is
-  your real uid and keeps its **real** XDG dirs writable. A compromised
-  app can read and modify your own config, cache and data as you — the
-  isolation is from *other* users and the *system*, not from you. This is
-  deliberate (apps must persist their own settings), but it means a
-  compromised extension can tamper with files another of *your* apps will
-  read.
+- **Your own home directory.** The app is your real uid, so the files
+  it creates are yours on the host. By default (decision #43) its
+  `$HOME` and XDG dirs are a **private per-app state tree**
+  (`$XDG_STATE_HOME/apse/<app-id>/`), so a compromised app can tamper
+  only with its own persistent state — the container-era
+  disconnection from the host desktop's configuration and state. With
+  `home = "host"` (opt-in) the **real** XDG dirs are writable instead:
+  a compromised app can read and modify your own config, cache and
+  data as you — the isolation is from *other* users and the *system*,
+  not from you — and it can tamper with files another of *your* apps
+  will read.
 - **Portal attribution.** When the `apse dbus-proxy` sidecar (Phase
   7.2) sits in front of the session bus, portal calls are proxied to
   the *host's* portal, which attributes them to the **host** desktop,
