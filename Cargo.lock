@@ -68,6 +68,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "apse"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "libc",
+ "log",
+ "nix",
+ "nono",
+ "rustix",
+ "sd-notify",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-scanner",
+ "wayland-server",
+ "xdg",
+ "zbus",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1979,33 +2006,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 dependencies = [
  "memchr",
-]
-
-[[package]]
-name = "apse"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "env_logger",
- "libc",
- "log",
- "nix",
- "nono",
- "rustix",
- "sd-notify",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
- "wayland-scanner",
- "wayland-server",
- "xdg",
- "zbus",
 ]
 
 [[package]]
