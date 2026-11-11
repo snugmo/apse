@@ -53,12 +53,16 @@ the module uses them; otherwise the file is bare statements.
   proc, self-bind of `/`, profile binds), the per-instance cgroup,
   the per-instance runtime dir and its sockets (wayland, X, bus,
   broker), the session bus (dbus-broker as `unconfined_dbusd_t` on
-  this box), spawning `xdg-dbus-proxy` and Xwayland, the
+  this box), the per-app private state tree (decision #43 — created
+  under `gconf_home_t`, bound over the app's home/XDG locations),
+  spawning `xdg-dbus-proxy` and Xwayland, the
   namespace/userns/cap setup, and the `/proc/self/exe` re-execs.
 - `apse_app_t` — sandboxed-app domain. B execs the app while in
   `apse_t`; the app (and its subprocesses) land here via the
-  `bin_t`/`user_home_t` transition. "Confined user app": instance
-  dir, /tmp, /dev nodes, /proc /sys /cgroup /etc, home/cache,
+  `bin_t`/`user_home_t`/`gconf_home_t` transition. "Confined user
+  app": instance dir, /tmp, /dev nodes, /proc /sys /cgroup /etc,
+  home (the private per-app state tree under `gconf_home_t` by
+  default, decision #43; the real home dirs with `home = "host"`),
   system libs, session bus, loopback network.
 - `xserver_t` — stock policy transitions `unconfined_t → xserver_t`
   on `xserver_exec_t`, but in confined mode the satellite is
@@ -93,10 +97,10 @@ sandboxed app and the helpers it or the pipeline exec run as
 the sandbox is still the namespaces + nono landlock/seccomp
 (decision #27) — the module is a second, compositable layer.
 
-If an app binary carries a type other than `bin_t`/`user_home_t`
-(check with `ls -lZ <app>`), add a `(typetransition apse_t TYPE
-process apse_app_t)` line (plus the matching process/file allows)
-to `apse.cil` and reinstall.
+If an app binary carries a type other than `bin_t`/`user_home_t`/
+`gconf_home_t` (check with `ls -lZ <app>`), add a
+`(typetransition apse_t TYPE process apse_app_t)` line (plus the
+matching process/file allows) to `apse.cil` and reinstall.
 
 ## Per-instance MCS (process-level isolation)
 

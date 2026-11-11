@@ -162,9 +162,15 @@
 (typetransition apse_t bin_t process apse_app_t)
 (typetransition apse_t shell_exec_t process apse_app_t)
 (typetransition apse_t user_home_t process apse_app_t)
+; decision #43: the private home's files are `gconf_home_t` (the
+; per-app state tree lives under `~/.local/state`), so the same
+; fallback transition (an exec without the exec context) covers
+; them
+(typetransition apse_t gconf_home_t process apse_app_t)
 (allow apse_app_t bin_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t shell_exec_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t user_home_t (process (noatsecure rlimitinh siginh)))
+(allow apse_app_t gconf_home_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t lib_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t usr_t (process (noatsecure rlimitinh siginh)))
 ; the exec-time SID change into `xserver_t` (the satellite's
@@ -316,6 +322,16 @@
 (allow apse_t data_home_t (dir (getattr)))
 (allow apse_t cache_home_t (dir (getattr)))
 (allow apse_t gconf_home_t (dir (getattr search)))
+; decision #43: the per-app private state tree
+; (`$XDG_STATE_HOME/apse/<app>/` — on Fedora `~/.local/state`,
+; `gconf_home_t`) is created by S before the first fork: a `mkdir`
+; at each level (`add_name` + `write` on the parent, `create` +
+; `getattr` on the new inode) and the 0700 `chmod` (`setattr`).
+; The tree is bound into the scratch and over the app's home/XDG
+; locations as *bind sources* — the same checks as the
+; per-instance runtime-dir carry (decision #28), which passes on
+; the `getattr`/`search` above.
+(allow apse_t gconf_home_t (dir (add_name create getattr open read search write setattr)))
 ; setattr: chmod of created dirs (mode 0700) and of the sockets
 ; (bind_listener sets 0600)
 (allow apse_t user_tmp_t (dir (create getattr open search read write add_name remove_name rmdir setattr)))
@@ -489,7 +505,12 @@
 (allow apse_app_t cache_home_t (file (append create getattr map open read write unlink)))
 (allow apse_app_t config_home_t (file (append create getattr map open read write unlink)))
 (allow apse_app_t data_home_t (file (append create getattr map open read write unlink)))
-(allow apse_app_t gconf_home_t (file (append create getattr map open read write unlink)))
+; `entrypoint`: the check of the *new* (exec-context) context at
+; the `apse_t` → `apse_app_t` exec when B execs a file out of the
+; private home (decision #43: its files are `gconf_home_t`);
+; `execute_no_trans`: the app's own children re-execing such a file
+; (they stay `apse_app_t` — no transition rule from the app type).
+(allow apse_app_t gconf_home_t (file (append create entrypoint execute execute_no_trans getattr map open read write unlink)))
 (allow apse_app_t bin_t (file (entrypoint execute execute_no_trans getattr map open read)))
 ; `ioctl`: the shim's `ld.so` runs before the `xserver_t` transition
 ; settles, in `apse_app_t`; it probes candidate `.so` files with
