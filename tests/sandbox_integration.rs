@@ -126,6 +126,10 @@ try:
 except OSError as e:
     print("SETUID0=ERR:%d" % e.errno)
 print("UIDMAP=" + open("/proc/self/uid_map").read().strip())
+# private-home mode (decision #43): B chdirs the app to its home
+# before the exec, so the working directory is $HOME (a dir that
+# exists in the sandbox), not the host's launch dir.
+print("CWD_IS_HOME=" + ("YES" if os.getcwd() == os.environ.get("HOME", "") else "NO"))
 "#;
 
 /// The probe: the rebuilt rootfs. For each mountpoint the *last*
@@ -444,6 +448,15 @@ fn identity_is_namespaced() {
         uidmap.as_deref(),
         Some(format!("{uid} {uid} 1").as_str()),
         "the uid_map is not the single extent (0 must be unmapped):\n{}",
+        run.out
+    );
+    // decision #43: the app's CWD is its home, not the host's launch
+    // dir (which the private-home build replaces and would leave a
+    // dangling CWD for a fork+chdir+exec app).
+    assert_eq!(
+        kv(&run.out, "CWD_IS_HOME"),
+        Some("YES"),
+        "the app's CWD is not its $HOME (private-home mode chdirs to it):\n{}",
         run.out
     );
     clean_instance("it-id");
