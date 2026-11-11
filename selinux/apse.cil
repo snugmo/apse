@@ -89,9 +89,16 @@
 ; instance's. That is a documented limitation of the module-based
 ; approach, not a bug — see LESSONS #33.
 (allow unconfined_t apse_exec_t (file (entrypoint execute getattr map open read)))
-; installing / updating the binary (sudo from the user shell; cp
-; probes the target with an ioctl, the update writes it)
-(allow unconfined_t apse_exec_t (file (write setattr relabelfrom relabelto ioctl)))
+; installing / updating / removing the binary (sudo from the user
+; shell; cp probes the target with an ioctl, the update writes it,
+; rm needs unlink). The base `files_unconfined_type file_type:file`
+; grant (which is how unconfined deletes e.g. `ssh_exec_t`) does not
+; reach this type — it is a *module* type, not a `file_type` member,
+; and it is deliberately kept out of that attribute so a confined
+; domain holding file_type write cannot modify the privileged binary.
+; So `unlink` must be granted explicitly here, as it is for
+; `apse_shim_t` below.
+(allow unconfined_t apse_exec_t (file (write setattr relabelfrom relabelto ioctl unlink)))
 ; the user can signal apse processes (stop / cleanup of runs;
 ; kill -9 needs the explicit sigkill, strace probes with signull)
 (allow unconfined_t apse_t (process (getattr noatsecure rlimitinh siginh transition signal sigkill signull)))
