@@ -633,5 +633,14 @@
 (allow init_t apse_t (file (getattr ioctl open read)))
 (allow init_t apse_app_t (dir (getattr read search)))
 (allow init_t apse_app_t (file (getattr ioctl open read)))
+; the binary's filecon below lands on the root fs (a seclabel btrfs
+; here), whose sb carries `fs_t`: both the setxattr relabel path and
+; `may_create` then check `filesystem:associate`, whose *subject* is
+; the **new** label's SID (this type) — the base policy grants that
+; to the `file_type` attribute, which a module type is not a member
+; of, so an existing file labelled `bin_t` could never be relabelled
+; to `apse_exec_t` in enforcing mode (the October install went through
+; only because the tuning loop ran permissive).
+(allow apse_exec_t fs_t (filesystem (associate)))
 (filecon "/usr/local/bin/apse" file (system_u object_r apse_exec_t ((s0) (s0))))
 (filecon "/usr/bin/apse" file (system_u object_r apse_exec_t ((s0) (s0))))
