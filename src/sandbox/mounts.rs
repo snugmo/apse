@@ -123,7 +123,10 @@ pub(crate) fn app_state_dir(cfg: &SandboxConfig) -> Result<String> {
 /// that sits under the home — the matching subpath *inside the
 /// private home* (the bind targets of step 7), all mode 0700. Runs
 /// in S on the host, before any fork; idempotent (the tree is
-/// persistent app state and a run never removes it).
+/// persistent app state and a run never removes it). In confined
+/// mode it also runs the one-time migration of the whole
+/// `$XDG_STATE_HOME/apse` tree to the module's own `apse_state_t`
+/// ([relabel_state_tree]).
 pub(crate) fn prepare_app_state(cfg: &SandboxConfig) -> Result<()> {
     if !cfg.profile.private_home() {
         return Ok(());
@@ -149,7 +152,116 @@ pub(crate) fn prepare_app_state(cfg: &SandboxConfig) -> Result<()> {
         std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))
             .with_context(|| format!("setting the mode of {d}"))?;
     }
+    let xdg = std::env::var("XDG_STATE_HOME").unwrap_or_else(|_| format!("{home}/.local/state"));
+    relabel_state_tree(Path::new(&xdg).join("apse").as_path());
     Ok(())
+}
+
+/// Relabel the whole per-app state tree (`$XDG_STATE_HOME/apse` —
+/// *all* app trees, not just the current one) to the module's own
+/// `apse_state_t`, replacing the `gconf_home_t` the gnome module's
+/// overly-broad `~/.local(/.*)?` filecon gave it. Two roles: the
+/// one-time migration of a pre-module tree (its inodes were born
+/// `gconf_home_t` before the named filetrans existed) and
+/// self-healing of any straggler (a child created before the
+/// filetrans was installed, or a custom `XDG_STATE_HOME` whose
+/// `apse` dir the filetrans never saw). Confined mode only — a
+/// no-op otherwise (the unconfined baseline has no module).
+///
+/// Same mechanism as the `apse_shim_t` relabel in `pdeathsig`
+/// (the on-7.2 relabel path checks ownership, `relabelfrom`
+/// subject→old label, `relabelto` subject→new label, the class
+/// `validatetrans` constraint, and `filesystem:associate` new
+/// label→mount; the pre-check `getxattr` carries no MAC check), all
+/// granted to `apse_t` by the module. Best-effort: a failure is a
+/// warning, since the straggler simply keeps the label it has.
+fn relabel_state_tree(root: &Path) {
+    if !apse::mcs::is_confined() {
+        return;
+    }
+    // The target context is the current user's (S may already sit
+    // at a per-instance `s0:cN` after the MCS narrowing) with the
+    // range forced to `s0`: target-low, dominated by every `s0:cN`,
+    // so the tree stays reachable from every instance.
+    let user = match std::fs::read_to_string("/proc/self/attr/current")
+        .ok()
+        .and_then(|l| l.split(':').next().map(str::to_string))
+    {
+        Some(u) => u,
+        None => return,
+    };
+    let want = format!("{user}:object_r:apse_state_t:s0");
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        relabel_to(&p, &want);
+        let Ok(rd) = std::fs::read_dir(&p) else {
+            continue; // not a dir (or unreadable) — nothing below it
+        };
+        for e in rd.flatten() {
+            let Ok(m) = e.file_type() else {
+                continue;
+            };
+            if m.is_symlink() {
+                continue; // symlinks carry no label of their own
+            }
+            stack.push(e.path());
+        }
+    }
+}
+
+fn relabel_to(p: &Path, want: &str) {
+    use std::os::unix::ffi::OsStrExt;
+    let cpath = match std::ffi::CString::new(p.as_os_str().as_bytes()) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    // The pre-check read: on this kernel `getxattr "security.selinux"`
+    // has no MAC check (`selinux_inode_getsecurity` only converts the
+    // inode's SID to a context string), so it is safe from any label.
+    let mut buf = [0u8; 256];
+    let n = unsafe {
+        libc::getxattr(
+            cpath.as_ptr(),
+            c"security.selinux".as_ptr(),
+            buf.as_mut_ptr().cast::<libc::c_void>(),
+            buf.len(),
+        )
+    };
+    if n < 0 {
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Unsupported {
+            eprintln!("apse: warning: getxattr on {} failed: {e}", p.display());
+        }
+        return; // no selinux xattr on this fs — nothing to relabel
+    }
+    if n > 0 {
+        let cur = String::from_utf8_lossy(&buf[..n as usize])
+            .trim_end_matches('\0')
+            .to_string();
+        if cur == want {
+            return;
+        }
+    }
+    // The kernel NUL-terminates the value itself (kmemdup_nul); pass
+    // the exact byte length, the path as a NUL-terminated CString
+    // (a raw Rust byte buffer is not one — LESSONS #43).
+    let r = unsafe {
+        libc::setxattr(
+            cpath.as_ptr(),
+            c"security.selinux".as_ptr(),
+            want.as_bytes().as_ptr() as *const libc::c_void,
+            want.len(),
+            0,
+        )
+    };
+    if r != 0 {
+        let e = io::Error::last_os_error();
+        eprintln!(
+            "apse: warning: could not relabel {} to {}: {e}",
+            p.display(),
+            want
+        );
+    }
 }
 
 /// One home/XDG bind of the private-home model (decision #43): the

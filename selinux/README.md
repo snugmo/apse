@@ -28,6 +28,12 @@ is the format everything ends up in anyway. Two reasons the old
   consumes `process`-class avtab entries, so the transition silently
   never fires. Hand-written CIL spells `process` explicitly
   (LESSONS #27).
+- the 3.11 module-store CIL dialect has **no `filetrans` keyword**:
+  a filename transition is spelled as the *five-field*
+  `typetransition` — `(typetransition src tgt class "name" child)`,
+  the quoted name distinguishing it from the four-field process
+  form. Probed against the reader with a test module; a `filetrans`
+  statement fails `semodule -i` with `Unknown keyword` (LESSONS #56).
 - a hand-written CIL lets us state the two things the classic
   pipeline gets wrong for a user-spawned type: the **role
   association** (`(roletype unconfined_r apse_t)` — the process
@@ -64,17 +70,45 @@ the module uses them; otherwise the file is bare statements.
   proc, self-bind of `/`, profile binds), the per-instance cgroup,
   the per-instance runtime dir and its sockets (wayland, X, bus,
   broker), the session bus (dbus-broker as `unconfined_dbusd_t` on
-  this box), the per-app private state tree (decision #43 — created
-  under `gconf_home_t`, bound over the app's home/XDG locations),
-  spawning `xdg-dbus-proxy` and Xwayland, the
+  this box), the per-app private state tree (decision #43 — the
+  `apse` root dir under `~/.local/state`, created and relabel-walked
+  here, bound over the app's home/XDG locations), spawning
+  `xdg-dbus-proxy` and Xwayland, the
   namespace/userns/cap setup, and the `/proc/self/exe` re-execs.
 - `apse_app_t` — sandboxed-app domain. B execs the app while in
   `apse_t`; the app (and its subprocesses) land here via the
-  `bin_t`/`user_home_t`/`gconf_home_t` transition. "Confined user
-  app": instance dir, /tmp, /dev nodes, /proc /sys /cgroup /etc,
-  home (the private per-app state tree under `gconf_home_t` by
-  default, decision #43; the real home dirs with `home = "host"`),
-  system libs, session bus, loopback network.
+  `bin_t`/`user_home_t`/`gconf_home_t`/`apse_state_t` transition.
+  "Confined user app": instance dir, /tmp, /dev nodes, /proc /sys
+  /cgroup /etc, home (the private per-app state tree —
+  `apse_state_t` — by default, decision #43; the real home dirs with
+  `home = "host"`), system libs, session bus, loopback network.
+- `apse_state_t` — the per-app state tree
+  (`$XDG_STATE_HOME/apse/` — on Fedora `~/.local/state/apse/`), the
+  home of decision #43. A dedicated type instead of the
+  `gconf_home_t` the gnome module's filecon
+  (`HOME_DIR/\.local(/.*)?`) incidentally gives to *all* of
+  `~/.local` (everything but `.local/share`). Labeling on this
+  kernel: a created inode takes the filetrans result for
+  (creator, parent, class) — `filecon` does *not* label created
+  inodes (`selinux_determine_inode_label` consults only an mntpoint
+  default, a process `create_sid`, or a filetrans) — so the named
+  filetrans `(typetransition apse_t gconf_home_t dir "apse"
+  apse_state_t)` makes the root the module's type when `apse_t`
+  creates it, and the no-rule default of `security_compute_sid`
+  (the *parent's* own type) makes everything beneath it inherit:
+  one rule labels the whole tree, any depth, on any fs. The range
+  takes the parent's low level (`s0`, dominated by every `s0:cN`).
+  Because a module type joins no base attribute, the tree's access
+  is governed by this module's grants alone: `apse_t` (creation,
+  the 0700 chmod, the setxattr relabel walk, and the `mounton` A's
+  private-home binds land on), `apse_app_t` (the full file
+  lifecycle, incl. fish's `lock`/`watch` and the
+  `entrypoint`/`execute` of private-home execs), and `unconfined_t`
+  (the user's own inspection, and the test-suite pipeline which
+  runs unrelabeled). The one-time migration of a pre-module
+  (gconf-labelled) tree and the self-heal of stragglers is S's
+  setxattr walk (`prepare_app_state` → `relabel_state_tree`, the
+  same mechanism as the `apse_shim_t` relabel; confined mode only).
 - `xserver_t` — stock policy transitions `unconfined_t → xserver_t`
   on `xserver_exec_t`, but in confined mode the satellite is
   `apse_t`, so the module adds the `apse_t → xserver_t`
@@ -109,7 +143,7 @@ the sandbox is still the namespaces + nono landlock/seccomp
 (decision #27) — the module is a second, compositable layer.
 
 If an app binary carries a type other than `bin_t`/`user_home_t`/
-`gconf_home_t` (check with `ls -lZ <app>`), add a
+`gconf_home_t`/`apse_state_t` (check with `ls -lZ <app>`), add a
 `(typetransition apse_t TYPE process apse_app_t)` line (plus the
 matching process/file allows) to `apse.cil` and reinstall.
 

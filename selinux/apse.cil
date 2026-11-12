@@ -18,6 +18,39 @@
 ; pre-registered in the sidtab — the sidtab expands on demand).
 (type apse_shim_t)
 (roletype object_r apse_shim_t)
+; decision #43 (refined): the per-app state tree
+; (`$XDG_STATE_HOME/apse/` — on Fedora `~/.local/state/apse/`) gets
+; a dedicated type instead of riding `gconf_home_t`. That label
+; only reached the tree by accident: the gnome module's filecon
+; `HOME_DIR/\.local(/.*)?` is broad enough to label *all* of
+; `~/.local` (everything but `.local/share`) with it. A module
+; type joins no base attribute by default (LESSONS #53) — in
+; particular it is *not* a member of `user_home_type`, so no
+; base-policy or other-module grant ever reaches the tree: only
+; this module's explicit grants apply (the apse domains, plus the
+; user's unconfined lifecycle). Labeling (verified against the
+; 7.2 source, `security/selinux/hooks.c` + `ss/services.c`): a
+; created inode takes the filetrans result for (creator, parent,
+; class) — `filecon` does not label created inodes on this
+; kernel (`selinux_determine_inode_label` consults only an
+; mntpoint default, a process `create_sid`, or filetrans) — so
+; the named filetrans below makes the `apse` root
+; `apse_state_t` and everything beneath it inherits the label
+; (the no-rule default of `security_compute_sid` is the parent's
+; own type: one rule labels the whole tree, any depth, any fs).
+; The range takes the parent's low level (MLS target-low: `s0`,
+; dominated by every `s0:cN`). S's runtime `setxattr` walk
+; (`prepare_app_state` — the same mechanism as `apse_shim_t`)
+; performs the one-time migration of a pre-module (gconf-labelled)
+; tree and self-heals any straggler: on this kernel the relabel
+; path checks ownership, `relabelfrom` (subject → the inode's old
+; label), `relabelto` (subject → this one), the class
+; `validatetrans` constraint, and `associate` (this SID → the
+; mount's SID), and the pre-check label read (`getxattr
+; "security.selinux"`) carries no MAC check
+; (`selinux_inode_getsecurity` only converts the inode's SID).
+(type apse_state_t)
+(roletype object_r apse_state_t)
 (typeattributeset cil_gen_require file_type)
 (typeattributeset cil_gen_require exec_type)
 (typeattributeset cil_gen_require entry_type)
@@ -80,6 +113,7 @@
 (typeattributeset cil_gen_require user_fonts_cache_t)
 (typeattributeset cil_gen_require fs_t)
 (typeattributeset cil_gen_require sysctl_t)
+(typeattributeset cil_gen_require sysctl_kernel_t)
 (typeattributeset cil_gen_require sysctl_vm_t)
 (typeattributeset cil_gen_require sysctl_vm_overcommit_t)
 (typeattributeset cil_gen_require sysctl_crypto_t)
@@ -184,6 +218,24 @@
 (allow unconfined_t apse_app_t (dir (getattr open read search)))
 (allow unconfined_t apse_app_t (file (getattr open read)))
 (allow unconfined_t apse_app_t (lnk_file (getattr read)))
+; the per-app state tree: the user's unconfined session gets the
+; same effective lifecycle on it that the base policy gives on the
+; home types — where it comes from *there* (the `userdomain`-family
+; dir grant plus the `file_type` attribute grant) and does not
+; reach this type (a module type joins no attribute, LESSONS #53),
+; so it is mirrored here explicitly. The tree is the user's own
+; 0700 data: DAC bounds every grant below to the owner's session,
+; so this is parity with the real home, not a new trust edge.
+; Included beyond inspection: the test-suite apse (unrelabeled, so
+; `unconfined_t`) runs the same pipeline as the confined one — the
+; `prepare_app_state` 0700 chmods (`setattr`) and A's private-home
+; binds (`mounton` — after the home bind has replaced `/home/user`
+; with the tree's `home` subdir, every XDG bind target is a tree
+; dir, as for `apse_t` above) — and the app the tests run inside
+; the sandbox writes, renames and execs in it like any home
+(allow unconfined_t apse_state_t (dir (add_name create getattr ioctl lock mounton open read remove_name rmdir search setattr unlink watch write)))
+(allow unconfined_t apse_state_t (file (append create execute execute_no_trans getattr ioctl lock map open read rename setattr unlink write)))
+(allow unconfined_t apse_state_t (lnk_file (create getattr read unlink)))
 ; connectto: a user client pointing at the instance's public D-Bus
 ; socket (the dbus-proxy sidecar's) or at any socket the app created
 ; — the socket object carries the *creator's* SID (the app's), so
@@ -205,15 +257,34 @@
 (typetransition apse_t bin_t process apse_app_t)
 (typetransition apse_t shell_exec_t process apse_app_t)
 (typetransition apse_t user_home_t process apse_app_t)
-; decision #43: the private home's files are `gconf_home_t` (the
-; per-app state tree lives under `~/.local/state`), so the same
-; fallback transition (an exec without the exec context) covers
-; them
+; the app's files in the *real* `~/.local/*` are `gconf_home_t`
+; (host mode — the gnome module's `\.local(/.*)?` filecon labels
+; all of `~/.local` but `.local/share`), so the fallback
+; transition (an exec without the exec context) covers them
 (typetransition apse_t gconf_home_t process apse_app_t)
+; decision #43 (refined): the private home's files are
+; `apse_state_t` — the dedicated type for the per-app state tree
+; (see the type's comment); the same fallback transition covers
+; an exec out of them
+(typetransition apse_t apse_state_t process apse_app_t)
+; the state tree's root is created by S under `~/.local/state`
+; (`gconf_home_t`). This named filetrans is *the* creation-time
+; mechanism (on this kernel `filecon` does not label created
+; inodes — see the `apse_state_t` comment): a dir named `apse`
+; that `apse_t` creates under a `gconf_home_t` parent is born
+; `apse_state_t`, and everything below it inherits the label
+; (the no-rule default is the parent's own type — children need
+; no rule). This module-store CIL dialect spells a filename
+; transition as the five-field `typetransition`
+; (`(typetransition src tgt class "name" child)` — verified
+; against libsepol 3.11's CIL reader, which has no `filetrans`
+; keyword); the four-field form is the process transition
+(typetransition apse_t gconf_home_t dir "apse" apse_state_t)
 (allow apse_app_t bin_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t shell_exec_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t user_home_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t gconf_home_t (process (noatsecure rlimitinh siginh)))
+(allow apse_app_t apse_state_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t lib_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t usr_t (process (noatsecure rlimitinh siginh)))
 ; the exec-time SID change into `xserver_t` (the satellite's
@@ -375,6 +446,56 @@
 ; per-instance runtime-dir carry (decision #28), which passes on
 ; the `getattr`/`search` above.
 (allow apse_t gconf_home_t (dir (add_name create getattr open read search write setattr)))
+; decision #43 (refined): the per-app state tree is the dedicated
+; `apse_state_t`, not `gconf_home_t` (that grant above now serves
+; the *parent* dir `~/.local/state` only: the `mkdir` of the
+; `apse` root into it, the traversal, the 0700 chmod). S creates
+; the tree (`add_name`/`write` on the parent, `create` on the new
+; inode, the 0700 `setattr`) and then relabels it — the whole
+; `~/.local/state/apse` subtree, every app's tree in one pass —
+; with the setxattr walk: the 7.2 relabel path checks ownership,
+; `relabelfrom` (subject → the inode's old label), `relabelto`
+; (subject → this one), the class `validatetrans` constraint,
+; and `filesystem:associate` (this SID → the mount's SID), the
+; same as the `apse_shim_t` relabel above; the pre-check label
+; read (`getxattr "security.selinux"`) carries no MAC check on
+; this kernel, so `getattr`/`read` here serve the walk's own
+; enumeration (getdents) and stat of the dirs it descends. The
+; old label of a straggler is `gconf_home_t` (a pre-module tree)
+; or the home family (a custom `XDG_STATE_HOME` parent); the
+; `associate` grants' *subject* is the new label's SID, as for
+; `apse_exec_t`/`apse_shim_t`: `fs_t` is the seclabel home fs,
+; the `tmpfs_t`/`unlabeled_t` pair the shim's (a custom XDG on a
+; tmpfs).
+; `mounton`: A's private-home binds (step 7) land on the tree's
+; own dirs — once the home bind has replaced `/home/user` with the
+; tree's `home` subdir, every later XDG bind target
+; (`.config`, `.cache`, …) resolves to a `home/…` subdir of the
+; tree. The explicit grant, not the `file_type` attribute one
+; above: a module type joins no base attribute (LESSONS #53), so
+; `apse_t file_type (dir (mounton))` never reaches this type
+(allow apse_t apse_state_t (dir (create getattr open read search write add_name remove_name rmdir setattr mounton relabelfrom relabelto)))
+(allow apse_t apse_state_t (file (create getattr open read write unlink relabelfrom relabelto)))
+(allow apse_t apse_state_t (lnk_file (getattr read relabelfrom relabelto)))
+(allow apse_t apse_state_t (sock_file (create getattr open read write unlink setattr)))
+(allow apse_t apse_state_t (unix_stream_socket (accept bind connect connectto create getattr read write getopt setopt listen)))
+(allow apse_state_t fs_t (filesystem (associate)))
+(allow apse_state_t tmpfs_t (filesystem (associate)))
+(allow apse_state_t unlabeled_t (filesystem (associate)))
+; the walk's `relabelfrom` on the old labels of the stragglers it
+; relabels (a pre-module tree is `gconf_home_t`; a custom
+; `XDG_STATE_HOME` parent carries the home-family label of the
+; dir that holds it):
+(allow apse_t gconf_home_t (dir (relabelfrom)))
+(allow apse_t gconf_home_t (file (getattr relabelfrom)))
+(allow apse_t user_home_t (dir (read relabelfrom)))
+(allow apse_t user_home_t (file (getattr relabelfrom)))
+(allow apse_t data_home_t (dir (read relabelfrom)))
+(allow apse_t data_home_t (file (getattr relabelfrom)))
+(allow apse_t cache_home_t (dir (read relabelfrom)))
+(allow apse_t cache_home_t (file (getattr relabelfrom)))
+(allow apse_t config_home_t (dir (relabelfrom)))
+(allow apse_t config_home_t (file (relabelfrom)))
 ; setattr: chmod of created dirs (mode 0700) and of the sockets
 ; (bind_listener sets 0600)
 (allow apse_t user_tmp_t (dir (create getattr open search read write add_name remove_name rmdir setattr)))
@@ -521,12 +642,25 @@
 ; `map` (plus the plain file reads for completeness).
 (allow apse_app_t user_tmp_t (file (getattr open read map)))
 (allow apse_app_t dri_device_t (chr_file (open read write getattr)))
-(allow apse_app_t proc_t (dir (getattr search)))
+; `ps` lists the process table: `open` for the `opendir` call and
+; `read` (readdir) for the enumeration of /proc. The /proc/<pid>
+; entries themselves take the target process's own context (on this
+; kernel the whole /proc/<pid>/ tree is labeled with it, LESSONS
+; #45), so the files under them are the self grant below
+(allow apse_app_t proc_t (dir (getattr open read search)))
 (allow apse_app_t proc_t (file (getattr open read)))
 (allow apse_app_t proc_t (lnk_file (read)))
 (allow apse_app_t security_t (filesystem (getattr)))
-(allow apse_app_t sysfs_t (dir (getattr search)))
+; `ps` walks the /sys CPU/NUMA tree (/sys/devices/system/…) for the
+; processor count: `open`/`read` for the enumeration, `search` for
+; the path components
+(allow apse_app_t sysfs_t (dir (getattr open read search)))
 (allow apse_app_t sysfs_t (file (getattr open read)))
+; `ps` stats its own process's /proc/<pid> dir with a tty probe
+; ioctl (TIOCGPTN). The self grant is MCS-bounded in effect: a
+; single-level `s0:cN` subject dominates only objects at the same
+; category, so it never reaches another instance's processes
+(allow apse_app_t apse_app_t (dir (ioctl)))
 (allow apse_app_t var_run_t (dir (getattr search)))
 (allow apse_app_t selinux_config_t (dir (getattr search)))
 (allow apse_app_t selinux_config_t (file (getattr open read)))
@@ -556,10 +690,20 @@
 (allow apse_app_t data_home_t (file (append create getattr map open read write setattr rename unlink)))
 ; `entrypoint`: the check of the *new* (exec-context) context at
 ; the `apse_t` → `apse_app_t` exec when B execs a file out of the
-; private home (decision #43: its files are `gconf_home_t`);
-; `execute_no_trans`: the app's own children re-execing such a file
-; (they stay `apse_app_t` — no transition rule from the app type).
+; private home; `execute_no_trans`: the app's own children
+; re-execing such a file (they stay `apse_app_t` — no transition
+; rule from the app type).
 (allow apse_app_t gconf_home_t (file (append create entrypoint execute execute_no_trans getattr map open read write setattr rename unlink)))
+; the private-home parallel: in `home = "private"` mode (the
+; default) the app's whole home resolves into the per-app state
+; tree, whose inodes are `apse_state_t` — so every grant the app
+; has on the home-dir types above applies here too, incl.
+; `lock`/`watch` (fish's config-dir live-reload) and the
+; `entrypoint`/`execute`/`execute_no_trans` file set. In host mode
+; the app never sees this type (the real home is the gconf/config/
+; cache/data family above).
+(allow apse_app_t apse_state_t (dir (create getattr open search read write add_name remove_name lock watch)))
+(allow apse_app_t apse_state_t (file (append create entrypoint execute execute_no_trans getattr map open read write setattr rename unlink)))
 ; `ioctl`: at exec, the loader (and some apps, e.g. nroff) probe
 ; the file with a tty ioctl (TCGETS2) — checked against the file's
 ; type (the same class as the shim's TCGETSID, LESSONS #40); the
@@ -586,9 +730,10 @@
 ; symlinked components = lnk_file read for readlink, and — on this
 ; kernel — a distinct `getattr` for `stat()` through the link;
 ; without these even `stat /` and PATH lookup fail):
-; `read` (readdir): fish's completion system enumerates /usr/bin
-; and /bin to list the available commands
-(allow apse_app_t bin_t (dir (getattr search read)))
+; fish's completion system enumerates /usr/bin and /bin to list
+; the available commands: `open` for the `opendir` call, `read`
+; (readdir) for the enumeration
+(allow apse_app_t bin_t (dir (getattr open read search)))
 (allow apse_app_t bin_t (lnk_file (getattr read)))
 ; `read` (readdir) covers fontconfig's enumeration of the
 ; conf.d-style dirs under /usr/share (conf.avail) — a plain
@@ -669,6 +814,11 @@
 ; /proc/sys: platform/runtime introspection (read-only; the values
 ; are kernel-constant, not instance data)
 (allow apse_app_t sysctl_t (dir (getattr search)))
+; `/proc/sys/kernel` is its own type (like the vm/crypto subtrees
+; above); procps's `ps` walks it for `pid_max` (the process-table
+; size) and stats the dir on the way
+(allow apse_app_t sysctl_kernel_t (dir (getattr open read search)))
+(allow apse_app_t sysctl_kernel_t (file (getattr open read)))
 ; `sysctl_vm_t` is the /proc/sys/vm subtree (a distinct type, not
 ; `sysctl_t`): foot's glibc stats it for runtime tuning.
 (allow apse_app_t sysctl_vm_t (dir (getattr search)))
