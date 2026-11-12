@@ -244,11 +244,12 @@ premise was wrong — the dir is `s0` by construction.)
 
 ## Denial-tuning notes (2026-11-12 round)
 
-The grant set above is the output of two enforcing-mode tuning
-rounds: the original one (2026-10-29) and a user-reported one
-(2026-11-12: `df`, `ls -la /dev`, and interactive fish in the
-sandbox). The four shapes that round added are the ones a future
-denial is most likely to be:
+The grant set above is the output of three enforcing-mode tuning
+rounds: the original one (2026-10-29) and two user-reported ones
+(both 2026-11-12: `df`, `ls -la /dev`, and interactive fish in the
+sandbox; then the `/proc` self links, `/proc/net`, and the
+top-level `/proc` entries). The shapes those rounds added are the
+ones a future denial is most likely to be:
 
 - **`statfs`/`df` targets the *filesystem*, not the file.** `df`
   (even with an explicit path) stats the root of every mount it
@@ -269,7 +270,11 @@ denial is most likely to be:
   a symlink: `lnk_file:getattr` (the lstat of the *link itself* —
   what produces the target name) and `lnk_file:read` (the
   readlink). Without the getattr, getdents still knows it is a
-  link, so the entry prints `l??????????` with no target.
+  link, so the entry prints `l??????????` with no target. The
+  same split applies to *self*-labeled links (the pident links of
+  `/proc/<pid>` — #64) and to links whose *target* has a different
+  type (`/proc/net` — #65): the readlink is `getattr` + `read`,
+  not `read` alone.
 - **Per-purpose exec types are not `bin_t`.** Fedora labels most
   of `/usr/bin/*` and `/usr/libexec/*` with per-purpose types
   (`lvm_exec_t`, `iptables_exec_t`, `systemd_systemctl_exec_t`,
@@ -284,12 +289,51 @@ denial is most likely to be:
   plus `dir:read` (getdents) — not just `search`. The same
   open/read pair is what the `proc_t`/`sysfs_t`/`sysctl_*`
   enumeration targets need (LESSONS #54, #59).
+- **`/proc/<pid>` links are *self*-labeled — the grant is a self
+  grant.** The whole `/proc/<pid>/` pident tree carries the
+  *target process's own* context (LESSONS #45), so a sandboxed
+  app listing its own `/proc/self` hits `apse_app_t:lnk_file` —
+  the grant is `apse_app_t` → `apse_app_t` (`getattr` + `read`,
+  the split in the bullet above; #64). MCS-bounded in effect: a
+  `s0:cN` subject dominates only same-category objects, so it
+  cannot reach another instance's pident links. The *top-level*
+  self links (`/proc/self`, `/proc/thread-self`, `/proc/mounts`)
+  are a different case: the genfs rule labels them `proc_t`, so
+  they take `getattr` + `read` on the `proc_t:lnk_file` grant.
+- **`/proc/net` is a relative symlink — the link and the content
+  are different types.** `/proc/net` → `self/net`: the link is
+  `proc_net_t` (genfs), following it lands in the process's
+  *own* net directory (self-labeled `apse_app_t`), whose files
+  (`dev`, `arp`, …) are `proc_net_t` again — three layers, three
+  grants: `lnk_file:(getattr read)` on the link, `dir:(getattr
+  open read search)` on the self-labeled directory (covered by
+  the existing self grant), and `file:(getattr open read)` on
+  `proc_net_t` for the content. Read-only: the content is
+  network state (a private netns in the sandbox — loopback only);
+  no write is granted.
+- **Top-level `/proc` entries have their own dedicated types.**
+  Not everything is `proc_t`: `/proc/irq` → `sysctl_irq_t`,
+  `/proc/pressure` → `proc_psi_t`, `/proc/kmsg` → `proc_kmsg_t`,
+  `/proc/mtrr` → `mtrr_device_t`, `/proc/kcore` → `proc_kcore_t`,
+  `/proc/mdstat` → `proc_mdstat_t`, `/proc/kallsyms` →
+  `system_map_t`, `/proc/sysrq-trigger` → `sysctl_t`. `ls /proc`
+  stats every entry: `getattr` only per type (stat, no content
+  read) — deliberately no `open`/`read` on `kcore` (kernel
+  memory) or `kmsg` (kernel log).
 
 Not fixed (deliberate, 2026-11-12): the `find /` class — a
 whole-filesystem traversal produces thousands of `getattr` on the
 root-level dir types and on the per-purpose exec types under
 `/usr`. If it is ever wanted it needs a much broader root-dir
-surface, not more per-type grants — left as a user decision.
+surface, not more per-type grants — left as a user decision. The
+same deferred class: fish's completion *executing* (not just
+stat-ing) the enumerated admin tools (`bootloader_exec_t`,
+`mount_exec_t`, `rpm_exec_t`, `lvm_exec_t`, `admin_passwd_exec_t`,
+…) — an `execute` denial, a far broader surface than the
+read-only `exec_type` grant above — and the metadata sweeps
+(`getfattr -R` over `/sys`/`/etc`/`/usr`; a python3 readlink sweep
+over `/usr/share/man` — `man_t:lnk_file:read`). Exploration
+tools, not sandbox use cases.
 
 ## Install (needs root)
 

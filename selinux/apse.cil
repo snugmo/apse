@@ -119,6 +119,14 @@
 (typeattributeset cil_gen_require sysctl_vm_t)
 (typeattributeset cil_gen_require sysctl_vm_overcommit_t)
 (typeattributeset cil_gen_require sysctl_crypto_t)
+(typeattributeset cil_gen_require proc_net_t)
+(typeattributeset cil_gen_require sysctl_irq_t)
+(typeattributeset cil_gen_require proc_psi_t)
+(typeattributeset cil_gen_require proc_kmsg_t)
+(typeattributeset cil_gen_require mtrr_device_t)
+(typeattributeset cil_gen_require proc_kcore_t)
+(typeattributeset cil_gen_require proc_mdstat_t)
+(typeattributeset cil_gen_require system_map_t)
 (typeattributeset cil_gen_require cert_t)
 (typeattributeset mcs_constrained_type (apse_t apse_app_t apse_shim_t))
 ; `apse_exec_t` is a standard application executable: it carries the
@@ -606,11 +614,15 @@
 ; the app's own unix sockets (socketpairs, local listeners):
 ; same socket-class self-permissions as its tcp/udp rule set
 (allow apse_app_t apse_app_t (unix_stream_socket (accept bind connect connectto create getattr read write getopt setopt listen)))
-; the app's own /proc/self/exe symlink carries its own type (the
-; genfs rule labels /proc/*/exe with the exec'd file's type), so a
-; lib that resolves its own path (and `stat /proc/self/exe` in
-; general) reads a `apse_app_t` lnk_file, not a `proc_t` one.
-(allow apse_app_t apse_app_t (lnk_file (read)))
+; the app's own /proc/<pid> pident links (cwd/exe/root) carry the
+; process's own context (the whole /proc/<pid>/ tree, LESSONS
+; #45), so a lib that resolves its own path (and `stat
+; /proc/self/exe` in general) hits an `apse_app_t` lnk_file, not a
+; `proc_t` one. `read` (the readlink) and `getattr` (the lstat that
+; yields the target name — without it `ls -la /proc/self` prints
+; `l??????????`, LESSONS #61) are separate checks. The self grant
+; is MCS-bounded in effect (the note on the dir:ioctl rule below)
+(allow apse_app_t apse_app_t (lnk_file (getattr read)))
 ; pipes the app creates for itself (its own child's stdio, internal
 ; plumbing) carry the app's own type; FIONBIO on one is a plain
 ; `ioctl` (0x542a), as bash and friends do on any pipe.
@@ -657,7 +669,32 @@
 ; #45), so the files under them are the self grant below
 (allow apse_app_t proc_t (dir (getattr open read search)))
 (allow apse_app_t proc_t (file (getattr open read)))
-(allow apse_app_t proc_t (lnk_file (read)))
+; the top-level /proc self-links (self, cwd, exe, root,
+; thread-self, mounts) are proc_t by the genfs rule; `ls /proc`
+; readlinks them (`read`) and lstats them (`getattr` — the target
+; name; without it the entry prints `l??????????`)
+(allow apse_app_t proc_t (lnk_file (getattr read)))
+; `/proc/net` is a *relative* symlink to `self/net` (the
+; process's own net view — the /proc/<pid>/net dir is self-
+; labeled, its files are proc_net_t): following it needs `read`
+; on the link (the follow check), `ls /proc` lstats it. The
+; content behind is read-only network state (in the sandbox, the
+; private netns — loopback only), so file open/read and the
+; can/ip/… subdirs' enumeration are granted, no write
+(allow apse_app_t proc_net_t (lnk_file (getattr read)))
+(allow apse_app_t proc_net_t (file (getattr open read)))
+(allow apse_app_t proc_net_t (dir (getattr open read search)))
+; `ls /proc` stats every top-level entry, most with their own
+; type — getattr only (stat, no content): kcore is kernel memory
+; and kmsg the kernel log, so no open/read is granted on them
+(allow apse_app_t sysctl_irq_t (dir (getattr)))
+(allow apse_app_t proc_psi_t (dir (getattr)))
+(allow apse_app_t proc_kmsg_t (file (getattr)))
+(allow apse_app_t mtrr_device_t (file (getattr)))
+(allow apse_app_t proc_kcore_t (file (getattr)))
+(allow apse_app_t proc_mdstat_t (file (getattr)))
+(allow apse_app_t system_map_t (file (getattr)))
+(allow apse_app_t sysctl_t (file (getattr)))
 ; `df` (even with an explicit path) `statfs`es the root of every
 ; mount it sees; the statfs is mediated against the *filesystem*
 ; type of the mounted fs — the `filesystem` class, the
