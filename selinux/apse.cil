@@ -553,15 +553,115 @@
 (allow apse_t user_devpts_t (chr_file (ioctl read write)))
 (allow apse_t dri_device_t (chr_file (open read write getattr)))
 (allow apse_t device_t (dir (getattr open search read)))
-(allow apse_app_t apse_app_t (process (fork getattr signal sigkill signull sigstop getsched getsession getrlimit setpgid setcurrent setexec setfscreate setkeycreate setsockcreate noatsecure rlimitinh siginh sigchld)))
-(allow apse_app_t apse_app_t (dir (create getattr open search read write add_name remove_name rmdir)))
-(allow apse_app_t apse_app_t (file (append create entrypoint execute execute_no_trans getattr map open read write unlink)))
-; the app's *own* pipes (a shell pipeline `a | b`): sh `fstat`s the
-; pipe ends (getattr), the writer writes, the reader reads — all
-; against the fifo the creating process labeled apse_app_t
-; (the creator's type). Without this every intra-app pipeline is
-; EACCES; mirror of the apse_t self-fifo rule above.
-(allow apse_app_t apse_app_t (fifo_file (read write getattr)))
+(allow apse_app_t apse_app_t (process (fork getcap getattr signal sigkill signull sigstop getsched getsession getrlimit setpgid setcurrent setexec setfscreate setkeycreate setsockcreate noatsecure rlimitinh siginh sigchld)))
+(allow apse_app_t apse_app_t (dir (create getattr open search read watch add_name remove_name rmdir lock ioctl)))
+(allow apse_app_t apse_app_t (file (append create entrypoint execute execute_no_trans getattr map open read write unlink lock ioctl)))
+; Completeness pass (v2.25): the *entire* base `domain.te` self-grant
+; set, granted explicitly to `apse_app_t` instead of joining the
+; `domain` attribute. Line-by-line against `domain.te` (the macro
+; expansions are literal — raw CIL has no macros):
+;   `self:dir { list_dir_perms watch_dir_perms }` → the dir rule above
+;     (`list_dir_perms` adds `lock`/`ioctl` to what we already had;
+;     `watch` is inotify on our own dirs)
+;   `self:lnk_file { read_lnk_file_perms lock ioctl }` → the lnk_file
+;     rule in this block
+;   `self:file rw_file_perms` → the file rule above (`rw_file_perms`
+;     adds `ioctl`/`lock` — flock on our own files is the lockfile
+;     pattern; `map` comes from the file_type rules below)
+;   `self:fifo_file rw_fifo_file_perms` (+ `manage_fifo_file_perms`
+;     under `fips_mode`, which is *on* on this box) → the fifo rule
+;     below, which is the `manage` superset
+;   `self:sem`/`self:shm` → the literal `create_sem_perms`/
+;     `create_shm_perms` expansions (those classes have no `ioctl`)
+;   `self:process { getcap fork getsched signal_perms }` → the
+;     process rule above (a superset)
+;   `domain:fd use` (`domain_fd_use`, on on this box — a dup of an
+;     app-created fd is checked against the *creator's* type, i.e.
+;     self) → the fd rule below
+;   `domain:key { link search }` (the `hide_broken_symptoms` hygiene
+;     block — a missing key grant degrades into confusing failures,
+;     not a clean EACCES) → the key rule below
+;   `file_type:file/chr_file/blk_file/lnk_file map` (gated by
+;     `domain_can_mmap_files`, *off* on this box — so even mozilla_t
+;     and mplayer_t don't get it; check with `getsebool`, the
+;     sesearch `:True` annotation is the condition's polarity, not
+;     the value) → the file_type map rules below, scoped to
+;     `apse_app_t` alone
+;   `fips_mode`: `kernel_read_kernel_sysctls` (a /proc/sys *content*
+;     grant) is the block's only non-self rule and is deliberately
+;     *not* mirrored — the v2.24 /proc design keeps content access
+;     closed until a denial asks for it (the README's tuning notes)
+; Why not `typeattribute apse_app_t domain`: the attribute is
+; two-sided, and the side that matters is the one where `domain`
+; is the *subject*. Joining it adds every active `domain → X`
+; rule to the app — 121 of them across 74 host types (126/76
+; counting the rules gated by off-tunables), measured against
+; the live avtab: `dir`/`file`/`lnk_file` reads across
+; `base_file_type`/`base_ro_file_type`/`security_t`/
+; `selinux_config_t`/`var_log_t` and the user/man/font/locale
+; families, `context translate`+its socket to `setrans_t` (the
+; context-translation daemon), `connectto`+`dbus send_msg` to
+; `systemd_resolved_t`, `system module_request` to `kernel_t`
+; (the `domain_kernel_load_modules` tunable is on), `process
+; {sigchld signull}` probes to `init_t`/`sysadm_t`/
+; `unconfined_t`/`abrt_*`/`spc_t`/`livecd_t`/`install_t`, and
+; socket-receive grants against
+; `unconfined_domain_type`/`netlabel_peer_t`/`ipsec_spd_t` (plus
+; `AF_PACKET` against `unlabeled_t`). That is the app→host
+; *escape* direction — the exact asymmetry the sandbox exists to
+; enforce (the intended direction is the reverse: the host user
+; may kill the app, as with a rootless podman container, but the
+; app may never reach the host). In the *normal* sandbox most of
+; it is gated anyway — the private pidns hides host PIDs (so the
+; `process` probes are moot), the rebuilt rootfs hides host
+; inodes (so the file grants reach only what a profile
+; bind-mounts in), and nono's seccomp floor filters the sockets
+; and the `mount`/`AF_PACKET` syscalls — which is precisely why
+; `container_t` can be a `domain` member without incident: a
+; privileged container *runtime* domain (260 attributes, incl.
+; `can_load_policy`/`can_setenforce` — the svirt orchestrator of
+; a private pidns with mapped uids), not a confined application.
+; But apse's primary controls (ns/landlock/seccomp) are all
+; built by apse itself, in one process tree, and the app runs as
+; its *real* uid (no uid mapping, decision #9) — it lacks
+; podman's uid-isolation safety net — so the SELinux module is
+; the *independent second layer* (defense in depth):
+; pre-emptively granting it the full `domain` subject-side reach
+; would disarm that backstop the moment a primary control has a
+; hole. The *other* side (`X → domain`, 851 active rules, e.g.
+; `unconfined_domain_type → domain: process {signal sigkill …}
+; file … socket …`) is the host→app direction and is fine by
+; design — *not* a reason to reject the attribute (the host user
+; managing its own app is the podman model; joining would simply
+; broaden our audited `unconfined_t → apse_app_t: process …`
+; line into the full surface, which is within the same-user
+; threat model). (The base process neverallows are *not* a
+; blocker either: the FSP 45.24 source carries three — `domain →
+; ~domain:process {transition dyntransition}` (domain.te:59) and
+; the two wider ones at :116-117 — but the installed policy
+; enforces none of them (the transitions the module declares
+; today sit squarely in their covered directions and have loaded
+; cleanly in enforcing since v2.13 — a violation is refused at
+; `semodule -i`), and joining adds none: the module declares no
+; transition from `apse_app_t` as subject, and the ones it does
+; declare keep their subjects' membership.) The remaining reason
+; is maintenance: base drift — a future `domain.te` change (a
+; tunable flip, a new grant) would reach the app silently; the
+; explicit mirror is audited in the enforcing-mode tuning loop (a
+; denial → a grant). All self-grants are MCS-bounded in effect:
+; a single-level `s0:cN` subject dominates only same-category
+; objects.
+(allow apse_app_t apse_app_t (fd (use)))
+(allow apse_app_t apse_app_t (key (link search)))
+(allow apse_app_t apse_app_t (sem (associate create destroy getattr read write setattr unix_read unix_write)))
+(allow apse_app_t apse_app_t (shm (associate create destroy getattr lock read write setattr unix_read unix_write)))
+; the app's *own* pipes and named pipes: the `manage_fifo_file_perms`
+; set (the `fips_mode` variant of `domain.te` — on on this box), so
+; the app can mkfifo, open, chmod, rename and unlink its own fifos,
+; not just read/write them; covers the shell-pipeline case (sh
+; `fstat`s the pipe ends — getattr) too. Every intra-app pipeline
+; without it is EACCES; mirror of the apse_t self-fifo rule above.
+(allow apse_app_t apse_app_t (fifo_file (create open getattr setattr read write append rename link unlink ioctl lock)))
 ; the app's shell (exec'd via /bin/sh or a subshell): entrypoint
 ; is the check of the *new* (exec-context) context at the apse_t
 ; → apse_app_t exec, execute_no_trans the same-type subshell
@@ -622,9 +722,12 @@
 ; /proc/self/exe` in general) hits an `apse_app_t` lnk_file, not a
 ; `proc_t` one. `read` (the readlink) and `getattr` (the lstat that
 ; yields the target name — without it `ls -la /proc/self` prints
-; `l??????????`, LESSONS #61) are separate checks. The self grant
-; is MCS-bounded in effect (the note on the dir:ioctl rule below)
-(allow apse_app_t apse_app_t (lnk_file (getattr read)))
+; `l??????????`, LESSONS #61) are separate checks. `lock` (F_SETLK on
+; an open link fd) and `ioctl` (an ioctl on the link's own fd — the
+; full `domain.te` self-grant shape, v2.25) round it out. The self
+; grant is MCS-bounded in effect (the note on the dir:ioctl rule
+; below)
+(allow apse_app_t apse_app_t (lnk_file (getattr lock read ioctl)))
 ; pipes the app creates for itself (its own child's stdio, internal
 ; plumbing) carry the app's own type; FIONBIO on one is a plain
 ; `ioctl` (0x542a), as bash and friends do on any pipe.
@@ -714,6 +817,23 @@
 ; metadata (fs type, size, free) — no content, so one attribute
 ; grant covers every mount the app may stat
 (allow apse_app_t filesystem_type (filesystem (getattr)))
+; mmap(2) is checked per *protection*: PROT_READ → `read`,
+; PROT_READ|PROT_WRITE → `read`+`write`, PROT_EXEC → `execute` — all
+; already granted on the file types the app reaches (document mmaps on
+; the state tree work: `apse_state_t:file` has `read`+`write`+`map`),
+; so the only missing case was `map` (PROT_NONE — a bare
+; address-space reservation) on the general file families. This is
+; exactly the body of the base's `domain_can_mmap_files` tunable
+; (`domain.te`), which is *off* on this box (getsebool) — scoping it
+; to `apse_app_t` alone is strictly narrower than the tunable would
+; be. And `map` alone is
+; content-free: a PROT_NONE mapping cannot be mprotect-ed to a usable
+; prot without the corresponding `read`/`write`/`execute` on the
+; target type, which stay per-type (LESSONS #68).
+(allow apse_app_t file_type (file (map)))
+(allow apse_app_t file_type (chr_file (map)))
+(allow apse_app_t file_type (blk_file (map)))
+(allow apse_app_t file_type (lnk_file (map)))
 (allow apse_app_t security_t (filesystem (getattr)))
 ; `ps` walks the /sys CPU/NUMA tree (/sys/devices/system/…) for the
 ; processor count: `open`/`read` for the enumeration, `search` for

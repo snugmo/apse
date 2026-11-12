@@ -83,7 +83,10 @@ the module uses them; otherwise the file is bare statements.
   `apse_state_t` — by default, decision #43; the real home dirs with
   `home = "host"`), system libs, session bus, loopback network, and
   `statfs` on every mounted filesystem type (`filesystem_type` — the
-  `df` surface; see the tuning notes below).
+  `df` surface; see the tuning notes below). Its *self*-grants are
+  the full base-policy `domain` set, mirrored explicitly (v2.25 —
+  the tuning notes explain why the `domain` attribute itself is not
+  joined).
 - `apse_state_t` — the per-app state tree
   (`$XDG_STATE_HOME/apse/` — on Fedora `~/.local/state/apse/`), the
   home of decision #43. A dedicated type instead of the
@@ -244,13 +247,15 @@ premise was wrong — the dir is `s0` by construction.)
 
 ## Denial-tuning notes (2026-11-12 round)
 
-The grant set above is the output of four enforcing-mode tuning
-rounds: the original one (2026-10-29) and three user-reported ones
-(all 2026-11-12: `df`, `ls -la /dev`, and interactive fish in the
-sandbox; then the `/proc` self links, `/proc/net`, and the
-top-level `/proc` entries; then the attribute-based redesign of
-that top-level stat). The shapes those rounds added are the ones
-a future denial is most likely to be:
+The grant set above is the output of four user-reported
+enforcing-mode tuning rounds (the original one, 2026-10-29; then
+`df` + `ls -la /dev` + interactive fish; the `/proc` self links,
+`/proc/net`, and the top-level `/proc` entries; and the
+attribute-based redesign of that top-level stat) and a fifth
+*proactive* completeness pass (v2.25) that re-audited the app's
+*self*-grants against the base policy's own `domain` set instead
+of waiting for a denial. The shapes the user-reported rounds
+added are the ones a future denial is most likely to be:
 
 - **`statfs`/`df` targets the *filesystem*, not the file.** `df`
   (even with an explicit path) stats the root of every mount it
@@ -330,6 +335,127 @@ a future denial is most likely to be:
   and deliberately excludes `kcore` (kernel memory) and `kmsg`
   (the kernel log). The one `/proc` type in neither attribute —
   `mtrr_device_t` (`/proc/mtrr`) — keeps a single-rule `getattr`.
+- **The app's self-grants are the base policy's own `domain` set,
+  mirrored explicitly — `apse_app_t` does *not* join the `domain`
+  attribute (v2.25).** A line-by-line audit of `domain.te`'s
+  self-grants (the macro expansions, spelled out literal — raw
+  CIL has no macros) showed the earlier denial-driven rounds had
+  built the mirror incrementally with four holes: `dir` was
+  missing `lock`/`ioctl` (`list_dir_perms`) and `watch`
+  (`watch_dir_perms`), `lnk_file` was missing `ioctl`, `file` was
+  missing `lock`/`ioctl` (`rw_file_perms` — flock on its own
+  files, the lockfile pattern), and the fifo grant was the
+  non-fips `rw` set while this box has `fips_mode` *on* (which is
+  the variant that gives domains `manage_fifo_file_perms`). The
+  CIL block is now a complete line-by-line mirror — dir,
+  lnk_file, file, fifo (the `manage` superset: mkfifo, open,
+  chmod, rename, unlink — a shell's *named*-pipe case on top of
+  the anonymous-pipeline `fstat`/read/write one), sem and shm
+  (the literal `create_*_perms` expansions — *those classes have
+  no `ioctl`*; a `Failed to resolve permission ioctl` from
+  `semodule -i` is the detector), process (plus `getcap`),
+  `fd:use` (`domain_fd_use`, on) and `key:{link search}`
+  (`hide_broken_symptoms`) — with one deliberate omission:
+  `fips_mode`'s only non-self rule, `kernel_read_kernel_sysctls`
+  (a /proc/sys *content* grant; the /proc design above keeps
+  content closed until a denial asks for it). The attribute
+  itself was investigated — the `container_t` example: a rootless
+  podman process is `domain`-labeled (`s0:cNNN,cMMM`) — and
+  rejected (the full audit is the comment block in `apse.cil`).
+  The attribute is two-sided; the side that matters is the one
+  where `domain` is the *subject*. Joining it would add every
+  active `domain → X` rule to the app — 121 of them across 74
+  host types (126/76 counting the rules gated by off-tunables):
+  `dir`/`file`/`lnk_file` reads across `base_file_type`/
+  `base_ro_file_type`/`security_t`/`selinux_config_t`/`var_log_t`
+  and the user/man/font/locale families, `context translate`+its
+  socket to `setrans_t`, `connectto`+`dbus send_msg` to
+  `systemd_resolved_t`, `system module_request` to `kernel_t`
+  (`domain_kernel_load_modules` is on), `process {sigchld
+  signull}` probes to `init_t`/`sysadm_t`/`unconfined_t`/
+  `abrt_*`/`spc_t`/`livecd_t`/`install_t`, and socket-receive
+  grants against `unconfined_domain_type`/`netlabel_peer_t`/
+  `ipsec_spd_t` (plus `AF_PACKET` against `unlabeled_t`). That is
+  the app→host *escape* direction — the exact asymmetry the
+  sandbox exists to enforce (the intended direction is the
+  reverse: the host user may kill the app, as with a rootless
+  podman container, but the app may never reach the host). In the
+  *normal* sandbox most of it is gated anyway — the private pidns
+  hides host PIDs, the rebuilt rootfs hides host inodes, nono's
+  seccomp floor filters the sockets and the `mount`/`AF_PACKET`
+  syscalls — which is why `container_t` can be a `domain` member
+  without incident: a privileged container *runtime* domain (260
+  attributes, incl. `can_load_policy`/`can_setenforce` — the
+  svirt orchestrator of a private pidns with mapped uids), not a
+  confined application. But apse's primary controls are all built
+  by apse itself, in one process tree, and the app runs as its
+  *real* uid (no uid mapping, decision #9) — it lacks podman's
+  uid-isolation safety net — so the SELinux module is the
+  *independent second layer* (defense in depth): pre-emptively
+  granting it the full `domain` subject-side reach would disarm
+  that backstop the moment a primary control (ns/seccomp) has a
+  hole. The *other* side (`X → domain`, 851 active rules, e.g.
+  `unconfined_domain_type → domain: process {signal sigkill …}
+  file … socket …`) is the host→app direction and is fine by
+  design — *not* a reason to reject the attribute (the host user
+  managing its own app is the podman model; joining would simply
+  broaden our audited `unconfined_t → apse_app_t: process …` line
+  into the full surface, within the same-user threat model). (The
+  base process neverallows are *not* a blocker either: FSP
+  45.24's `domain.te` carries three — `domain → ~domain:process
+  {transition dyntransition}` at :59 and two wider ones at
+  :116-117 — but the installed policy enforces none of them, since
+  the module's own transitions sit squarely in their covered
+  directions and have loaded cleanly in enforcing since v2.13 — a
+  violation would be refused at `semodule -i` — and joining adds
+  none: the module declares no transition from `apse_app_t` as
+  subject.) The remaining reason is maintenance: **base drift** —
+  a future `domain.te` change (a tunable flip, a new grant) would
+  reach the app silently; the explicit mirror is audited in the
+  enforcing-mode tuning loop (a denial → a grant). Every
+  self-grant is MCS-bounded in effect (a single-level `s0:cN`
+  subject dominates only same-category objects).
+- **`map` is checked per *protection*, and the only missing case
+  was PROT_NONE (v2.25).** `mmap(2)` checks `read`/`write`/
+  `execute` against the mapping's prot bits — all already granted
+  on the file types the app reaches (document mmaps on the state
+  tree already worked: `apse_state_t:file` has `read`+`write`+
+  `map`) — so the only untested case was `map` itself (a
+  PROT_NONE address-space reservation) on the general file
+  families. That is exactly the body of the base's
+  `domain_can_mmap_files` tunable (`domain.te`), which is *off* on
+  this box (`getsebool` — not the sesearch `:True` annotation, which
+  is the condition's polarity) for all 934 `domain` members (even
+  `mozilla_t` and `mplayer_t` don't have it) — the grant is scoped
+  to `apse_app_t` alone, strictly narrower than the tunable. And
+  `map` alone is content-free: a PROT_NONE mapping
+  cannot be `mprotect`-ed to a usable prot without the
+  corresponding `read`/`write`/`execute` on the target type, which
+  stay per-type.
+- **Layering: the seccomp floor (decision #25) decides before
+  SELinux, and one granted permission is unreachable on this
+  kernel (v2.25).** The fifo `manage` set above includes `create`
+  (mkfifo) — installed and `sesearch`-verifiable, but the
+  *syscall* is auto-rejected by nono's seccomp floor (it is not
+  in nono's allowlist) *before* the SELinux check, so in a live
+  sandbox it fails EACCES with **zero AVC denials** — a zero-AVC
+  EACCES in the sandbox means "seccomp floor", not "SELinux".
+  The v2.25 verification therefore ran a purpose-built probe that
+  exercises each grant directly (24 checks: getpcaps, a dup'd fd,
+  sem/shm lifecycles incl. `SHM_LOCK`, inotify `watch`, `flock`,
+  an `O_PATH` `getattr`/readlink, RW and PROT_NONE `mmap`s of
+  files, and `ioctl` via a *made-up* command number —
+  `security_file_ioctl` fires at syscall entry, at the top of
+  `SYSCALL_DEFINE3(ioctl)`, before `do_vfs_ioctl` dispatch and any
+  `FMODE_PATH`/command filtering, so it is the only way to
+  exercise `ioctl` on a symlink's fd). The other reachability
+  fact the mirror documents rather than tests: `lnk_file:lock`
+  is granted (the `domain.te` shape) but no unprivileged process
+  can ever hit it — the only fd to a symlink is `O_PATH` (a
+  final-component `O_NOFOLLOW` open is ELOOP; `open_by_handle_at`
+  needs `CAP_DAC_READ_SEARCH`), and every locking path
+  (`flock`, `fcntl F_SETLK`/`F_OFD_*`) rejects an `FMODE_PATH` fd
+  with EBADF *before* the LSM check.
 
 Not fixed (deliberate, 2026-11-12): the `find /` class — a
 whole-filesystem traversal produces thousands of `getattr` on the
