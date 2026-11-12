@@ -46,7 +46,18 @@ the module uses them; otherwise the file is bare statements.
 - `apse_exec_t` — file type for the installed `apse` binary
   (`/usr/local/bin/apse` or `/usr/bin/apse`; the two `(filecon …)`
   statements at the bottom of the CIL, installed in the same command
-  as the rules).
+  as the rules). A *standard application executable*: it carries
+  the same attribute set the base policy gives `ssh_exec_t` /
+  `useradd_exec_t` / `sudo_exec_t` (`file_type`, `exec_type`,
+  `entry_type`, `application_exec_type`, `non_auth_file_type`,
+  `non_security_file_type` — see `seinfo -t apse_exec_t -x`), so
+  unconfined gets the full file lifecycle on it (including `unlink`
+  for updates) by attribute, and the only explicit grant is
+  `entrypoint`, which the base policy always gives per-type from
+  the defining module (it is required for the
+  `unconfined_t → apse_t` transition). No write grant on any of
+  those attributes reaches `apse_t`/`apse_app_t`, so a sandboxed
+  app still cannot modify the binary.
 - `apse_t` — supervisor / S→A→B pipeline / sidecar domain. Reached
   by transition from `unconfined_t` when the binary carries
   `apse_exec_t`. Covers: rootfs mounts (fresh tmpfs / devpts /
