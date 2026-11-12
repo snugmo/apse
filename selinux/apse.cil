@@ -112,7 +112,9 @@
 (typeattributeset cil_gen_require fonts_cache_t)
 (typeattributeset cil_gen_require user_fonts_cache_t)
 (typeattributeset cil_gen_require fs_t)
+(typeattributeset cil_gen_require filesystem_type)
 (typeattributeset cil_gen_require sysctl_t)
+(typeattributeset cil_gen_require sysctl_fs_t)
 (typeattributeset cil_gen_require sysctl_kernel_t)
 (typeattributeset cil_gen_require sysctl_vm_t)
 (typeattributeset cil_gen_require sysctl_vm_overcommit_t)
@@ -629,9 +631,15 @@
 ; /dev/pts/ptmx), and the dynamically created slaves are
 ; user_devpts_t (the same genfs match the host's /dev/pts/N get).
 ; grantpt/unlockpt (TIOCSPTLCK/TIOCGPTN) are ioctls on the master;
-; winch handling is an ioctl on the slave.
-(allow apse_app_t tmpfs_t (lnk_file (read)))
-(allow apse_app_t devpts_t (dir (getattr search)))
+; winch handling is an ioctl on the slave. `ls -la /dev` lstats the
+; link itself: `getattr` is a separate check from `read` (without
+; it the entry prints `l??????????` — getdents knows it is a link,
+; the lstat is denied, the target name never appears)
+(allow apse_app_t tmpfs_t (lnk_file (getattr read)))
+; fish maps its controlling tty back to a `/dev/pts/<N>` name by
+; enumerating the (fresh, per-instance) devpts root: `open` for
+; the `opendir` call, `read` for the enumeration
+(allow apse_app_t devpts_t (dir (getattr open read search)))
 (allow apse_app_t devpts_t (chr_file (open read write getattr ioctl)))
 (allow apse_app_t user_devpts_t (chr_file (open read write getattr ioctl)))
 ; the compositor's keymap file: wlroots writes each client's XKB
@@ -650,6 +658,14 @@
 (allow apse_app_t proc_t (dir (getattr open read search)))
 (allow apse_app_t proc_t (file (getattr open read)))
 (allow apse_app_t proc_t (lnk_file (read)))
+; `df` (even with an explicit path) `statfs`es the root of every
+; mount it sees; the statfs is mediated against the *filesystem*
+; type of the mounted fs — the `filesystem` class, the
+; `filesystem_type` attribute family (fresh tmpfs mounts, the
+; btrfs root, /proc, /sys, cgroup2, …). `getattr` = superblock
+; metadata (fs type, size, free) — no content, so one attribute
+; grant covers every mount the app may stat
+(allow apse_app_t filesystem_type (filesystem (getattr)))
 (allow apse_app_t security_t (filesystem (getattr)))
 ; `ps` walks the /sys CPU/NUMA tree (/sys/devices/system/…) for the
 ; processor count: `open`/`read` for the enumeration, `search` for
@@ -735,6 +751,15 @@
 ; (readdir) for the enumeration
 (allow apse_app_t bin_t (dir (getattr open read search)))
 (allow apse_app_t bin_t (lnk_file (getattr read)))
+; the same completion then stats *every enumerated entry*: Fedora
+; labels most of /usr/bin/* and /usr/libexec/* with per-purpose
+; exec types (lvm_exec_t, iptables_exec_t, systemd_systemctl_exec_t,
+; …), not `bin_t`, so the `bin_t` grant above reaches only the rest
+; — the `exec_type` attribute (every `*_exec_t`) is the complete
+; target. `getattr` (stat) on the files; on the symlinks among them
+; `getattr` + `read` (readlink is a separate check on this kernel)
+(allow apse_app_t exec_type (file (getattr)))
+(allow apse_app_t exec_type (lnk_file (getattr read)))
 ; `read` (readdir) covers fontconfig's enumeration of the
 ; conf.d-style dirs under /usr/share (conf.avail) — a plain
 ; stat (getattr) cannot list their entries.
@@ -819,6 +844,11 @@
 ; size) and stats the dir on the way
 (allow apse_app_t sysctl_kernel_t (dir (getattr open read search)))
 (allow apse_app_t sysctl_kernel_t (file (getattr open read)))
+; `df` stats /proc/sys/fs/binfmt_misc to detect that mount:
+; `search` of the /proc/sys/fs dir (its own sysctl_* type, like
+; the kernel/vm/crypto subtrees above) and the stat of the entry
+(allow apse_app_t sysctl_fs_t (dir (getattr search)))
+(allow apse_app_t sysctl_fs_t (file (getattr open read)))
 ; `sysctl_vm_t` is the /proc/sys/vm subtree (a distinct type, not
 ; `sysctl_t`): foot's glibc stats it for runtime tuning.
 (allow apse_app_t sysctl_vm_t (dir (getattr search)))

@@ -81,7 +81,9 @@ the module uses them; otherwise the file is bare statements.
   "Confined user app": instance dir, /tmp, /dev nodes, /proc /sys
   /cgroup /etc, home (the private per-app state tree —
   `apse_state_t` — by default, decision #43; the real home dirs with
-  `home = "host"`), system libs, session bus, loopback network.
+  `home = "host"`), system libs, session bus, loopback network, and
+  `statfs` on every mounted filesystem type (`filesystem_type` — the
+  `df` surface; see the tuning notes below).
 - `apse_state_t` — the per-app state tree
   (`$XDG_STATE_HOME/apse/` — on Fedora `~/.local/state/apse/`), the
   home of decision #43. A dedicated type instead of the
@@ -239,6 +241,55 @@ broker (`s0`) can reach them, because any `cN` dominates plain
 `s0`. (An earlier version of this note assumed objects carry the
 creator's range and recommended pre-creating the dir at `s0`; that
 premise was wrong — the dir is `s0` by construction.)
+
+## Denial-tuning notes (2026-11-12 round)
+
+The grant set above is the output of two enforcing-mode tuning
+rounds: the original one (2026-10-29) and a user-reported one
+(2026-11-12: `df`, `ls -la /dev`, and interactive fish in the
+sandbox). The four shapes that round added are the ones a future
+denial is most likely to be:
+
+- **`statfs`/`df` targets the *filesystem*, not the file.** `df`
+  (even with an explicit path) stats the root of every mount it
+  sees; the `statfs(2)` check runs against the **mounted
+  filesystem's** type — the `filesystem` class, the
+  `filesystem_type` attribute family (`tmpfs_t`, `device_t`,
+  `fs_t`, `proc_t`, `sysfs_t`, `cgroup_t`, …) — never the path's
+  label. `getattr` here is superblock metadata (fs type, size,
+  free) — no content — so one attribute grant covers every mount
+  the app may stat. `df` also stats `/proc/sys/fs/binfmt_misc` to
+  detect that mount: `/proc/sys/fs` is its own `sysctl_fs_t` type
+  (like `sysctl_kernel_t`/`sysctl_vm_t`), granted `search` +
+  `getattr`.
+- **`l??????????` = a missing `lnk_file:getattr`.** The
+  sandbox's `/dev/ptmx` is a relative symlink in the *fresh*
+  tmpfs (decision #39), so it carries the tmpfs default
+  `tmpfs_t`, not `ptmx_t`. A listing does two separate checks on
+  a symlink: `lnk_file:getattr` (the lstat of the *link itself* —
+  what produces the target name) and `lnk_file:read` (the
+  readlink). Without the getattr, getdents still knows it is a
+  link, so the entry prints `l??????????` with no target.
+- **Per-purpose exec types are not `bin_t`.** Fedora labels most
+  of `/usr/bin/*` and `/usr/libexec/*` with per-purpose types
+  (`lvm_exec_t`, `iptables_exec_t`, `systemd_systemctl_exec_t`,
+  `fsadm_exec_t`, …); a `bin_t` grant reaches only the rest. For
+  tools that stat every enumerated entry (fish's completion), the
+  target is the **`exec_type` attribute** (the superset of every
+  `*_exec_t`): `file:getattr` on the files, `lnk_file:(getattr
+  read)` on the symlinks among them.
+- **`open` and `read` on a dir are separate.** A tool that maps
+  its controlling tty back to a `/dev/pts/<N>` name (fish)
+  `opendir`s the (fresh, per-instance) devpts root — `dir:open`
+  plus `dir:read` (getdents) — not just `search`. The same
+  open/read pair is what the `proc_t`/`sysfs_t`/`sysctl_*`
+  enumeration targets need (LESSONS #54, #59).
+
+Not fixed (deliberate, 2026-11-12): the `find /` class — a
+whole-filesystem traversal produces thousands of `getattr` on the
+root-level dir types and on the per-purpose exec types under
+`/usr`. If it is ever wanted it needs a much broader root-dir
+surface, not more per-type grants — left as a user decision.
 
 ## Install (needs root)
 
