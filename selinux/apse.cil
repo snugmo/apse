@@ -34,12 +34,14 @@
 (typeattributeset cil_gen_require data_home_t)
 (typeattributeset cil_gen_require cache_home_t)
 (typeattributeset cil_gen_require gconf_home_t)
+(typeattributeset cil_gen_require man_t)
 (typeattributeset cil_gen_require lib_t)
 (typeattributeset cil_gen_require ld_so_t)
 (typeattributeset cil_gen_require ld_so_cache_t)
 (typeattributeset cil_gen_require locale_t)
 (typeattributeset cil_gen_require usr_t)
 (typeattributeset cil_gen_require root_t)
+(typeattributeset cil_gen_require mnt_t)
 (typeattributeset cil_gen_require home_root_t)
 (typeattributeset cil_gen_require var_t)
 (typeattributeset cil_gen_require var_run_t)
@@ -541,18 +543,29 @@
 ; config dir (live-reload)
 (allow apse_app_t config_home_t (dir (create getattr open search read write add_name remove_name lock watch)))
 (allow apse_app_t data_home_t (dir (create getattr open search read write add_name remove_name)))
-(allow apse_app_t gconf_home_t (dir (create getattr open search read write add_name remove_name)))
-(allow apse_app_t user_home_t (file (append create entrypoint execute execute_no_trans getattr map open read write unlink)))
-(allow apse_app_t cache_home_t (file (append create getattr map open read write unlink)))
-(allow apse_app_t config_home_t (file (append create getattr map open read write unlink)))
-(allow apse_app_t data_home_t (file (append create getattr map open read write unlink)))
+; `lock`/`watch`: in the private home (decision #43) fish's config
+; dir lives in this tree, so it gets the same flock/inotify grants
+; as `config_home_t` above (host mode) — live-reload
+(allow apse_app_t gconf_home_t (dir (create getattr open search read write add_name remove_name lock watch)))
+; `setattr`/`rename`: fish's atomic save — write a temp file,
+; `fchmod`/`ftruncate` it (setattr), then `rename` it over the
+; final name (variables, history, completions)
+(allow apse_app_t user_home_t (file (append create entrypoint execute execute_no_trans getattr map open read write setattr rename unlink)))
+(allow apse_app_t cache_home_t (file (append create getattr map open read write setattr rename unlink)))
+(allow apse_app_t config_home_t (file (append create getattr map open read write setattr rename unlink)))
+(allow apse_app_t data_home_t (file (append create getattr map open read write setattr rename unlink)))
 ; `entrypoint`: the check of the *new* (exec-context) context at
 ; the `apse_t` → `apse_app_t` exec when B execs a file out of the
 ; private home (decision #43: its files are `gconf_home_t`);
 ; `execute_no_trans`: the app's own children re-execing such a file
 ; (they stay `apse_app_t` — no transition rule from the app type).
-(allow apse_app_t gconf_home_t (file (append create entrypoint execute execute_no_trans getattr map open read write unlink)))
-(allow apse_app_t bin_t (file (entrypoint execute execute_no_trans getattr map open read)))
+(allow apse_app_t gconf_home_t (file (append create entrypoint execute execute_no_trans getattr map open read write setattr rename unlink)))
+; `ioctl`: at exec, the loader (and some apps, e.g. nroff) probe
+; the file with a tty ioctl (TCGETS2) — checked against the file's
+; type (the same class as the shim's TCGETSID, LESSONS #40); the
+; probe fails with ENOTTY either way, so `ioctl` is all that is
+; needed for it to behave as out-of-sandbox
+(allow apse_app_t bin_t (file (entrypoint execute execute_no_trans getattr ioctl map open read)))
 ; `ioctl`: the shim's `ld.so` runs before the `xserver_t` transition
 ; settles, in `apse_app_t`; it probes candidate `.so` files with
 ; `TCGETSID` (its `isatty`-style check) and that ioctl is checked
@@ -573,7 +586,9 @@
 ; symlinked components = lnk_file read for readlink, and — on this
 ; kernel — a distinct `getattr` for `stat()` through the link;
 ; without these even `stat /` and PATH lookup fail):
-(allow apse_app_t bin_t (dir (getattr search)))
+; `read` (readdir): fish's completion system enumerates /usr/bin
+; and /bin to list the available commands
+(allow apse_app_t bin_t (dir (getattr search read)))
 (allow apse_app_t bin_t (lnk_file (getattr read)))
 ; `read` (readdir) covers fontconfig's enumeration of the
 ; conf.d-style dirs under /usr/share (conf.avail) — a plain
@@ -613,7 +628,11 @@
 (allow apse_app_t cpu_online_t (file (getattr open read)))
 (allow apse_app_t lib_t (lnk_file (read)))
 (allow apse_app_t etc_t (lnk_file (read)))
-(allow apse_app_t root_t (dir (getattr search)))
+; `open`/`read`: `ls /` — `open(2)` on a directory is checked
+; against `dir:open` (the same trap as the fontconfig dirs,
+; LESSONS #35: a `read`-only grant still fails the open), and the
+; subsequent `getdents` needs `read`
+(allow apse_app_t root_t (dir (getattr open search read)))
 ; glibc/bash NSS lookups (getpwuid): /etc/passwd
 (allow apse_app_t passwd_file_t (file (getattr open read)))
 ; fstat on the host-created stdio pipes inherited into the sandbox
@@ -621,8 +640,21 @@
 ; the dynamic linker itself: open (its fstat) plus execute/map/read
 (allow apse_app_t ld_so_t (file (execute map open read getattr)))
 (allow apse_app_t ld_so_cache_t (file (getattr map open read)))
-(allow apse_app_t locale_t (dir (search)))
+; `getattr`: git (and glibc) stat /usr/share/locale for
+; translations before falling back to the C locale
+(allow apse_app_t locale_t (dir (getattr search)))
 (allow apse_app_t locale_t (file (getattr map open read)))
+; man: stats the man search dirs, enumerates the section
+; subdirs (`man1`/`man6`/`man8` — `open`/`read`, the same
+; dir-open trap), and reads the page files (all `man_t`); no
+; cache access needed — a miss is a clean "No manual entry"
+(allow apse_app_t man_t (dir (getattr open search read)))
+; `ioctl`: man queries the page file's extents (FS_IOC_FIEMAP)
+; before reading it — a read-only probe
+(allow apse_app_t man_t (file (getattr ioctl open read)))
+; `ls /` stats every entry of the root dir; /afs (mnt_t) is the
+; one unmasked entry whose type is not covered above
+(allow apse_app_t mnt_t (dir (getattr open search read)))
 ; ls formatting mtimes: tzset reads /etc/localtime, a symlink
 ; (labeled locale_t, not etc_t) into the zoneinfo tree
 (allow apse_app_t locale_t (lnk_file (read)))
