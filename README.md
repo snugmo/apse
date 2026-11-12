@@ -704,4 +704,20 @@ carries only the per-instance dir).
   (Phase 7.3) are built and run per instance; neither is started by a
   plain `run`, so out of the box the host session bus is simply
   unreachable and there is no in-sandbox X server.
-- **SELinux: local module built, installed and tuned (enforcing-mode tuning loop done, 2026-10-29).** `selinux/` ships a local module (`apse`) defining `apse_t` (supervisor/pipeline/sidecars) and `apse_app_t` (the sandboxed app), plus the `xserver_t` rules the reconnaissance found missing and the per-instance MCS mechanics (`src/mcs.rs`). The policy is written **directly in CIL** — `selinux/apse.cil` is the single source of truth *and* the install artifact (`sudo semodule -i selinux/apse.cil`, then `sudo restorecon -v /usr/local/bin/apse` for confined mode; no `.te`/`checkmodule`, no `build.sh`). Installed, the stack is confined; the tuning loop (audit2allow against a confined run, iterated until a confined `echo`+`cat`+`ls` produced zero denials) closed the known allow gaps. What the module deliberately does *not* do: **file-level** separation between instances (created objects are `s0`, not `cN` — see the "SELinux MCS is process-level" residual-risk bullet above) and the **`signull` (kill -0)** category gap (unfixable in a module CIL). Uninstalled, the stack runs unconfined exactly as before; the module is a second containment layer on top of the namespaces + nono, not a replacement for them.
+- **SELinux: local module built, installed and tuned (enforcing-mode tuning loop
+  done, 2026-10-29).** `selinux/` ships a local module (`apse`) defining
+  `apse_t` (supervisor/pipeline/sidecars) and `apse_app_t` (the sandboxed app),
+  plus the `xserver_t` rules the reconnaissance found missing and the
+  per-instance MCS mechanics (`src/mcs.rs`). The policy is written
+  **directly in CIL** — `selinux/apse.cil` is the single source of truth *and*
+  the install artifact (`sudo semodule -i selinux/apse.cil`, then
+  `sudo restorecon -v /usr/local/bin/apse` for confined mode; no
+  `.te`/`checkmodule`, no `build.sh`). Installed, the stack is confined; the
+  tuning loop (audit2allow against a confined run, iterated until a confined
+  `echo`+`cat`+`ls` produced zero denials) closed the known allow gaps. What the
+  module deliberately does *not* do: **file-level** separation between
+  instances (created objects are `s0`, not `cN` — see the "SELinux MCS is
+  process-level" residual-risk bullet above) and the **`signull` (kill -0)**
+  category gap (unfixable in a module CIL). Uninstalled, the stack runs
+  unconfined exactly as before; the module is a second containment layer on top
+  of the namespaces + nono, not a replacement for them.
