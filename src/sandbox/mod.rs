@@ -446,12 +446,12 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
                         // is left as is.
                         if config.profile.private_home() {
                             let home = std::env::var("HOME").unwrap_or_default();
-                            let target =
-                                if !home.is_empty() && std::path::Path::new(&home).is_dir() {
-                                    home
-                                } else {
-                                    String::from("/")
-                                };
+                            let target = if !home.is_empty() && std::path::Path::new(&home).is_dir()
+                            {
+                                home
+                            } else {
+                                String::from("/")
+                            };
                             if let Err(e) = mounts::chdir(&target) {
                                 warn!(
                                     "B: chdir to the app's home ({target}) failed: {e}; \
