@@ -19,6 +19,11 @@
 (type apse_shim_t)
 (roletype object_r apse_shim_t)
 (typeattributeset cil_gen_require file_type)
+(typeattributeset cil_gen_require exec_type)
+(typeattributeset cil_gen_require entry_type)
+(typeattributeset cil_gen_require application_exec_type)
+(typeattributeset cil_gen_require non_auth_file_type)
+(typeattributeset cil_gen_require non_security_file_type)
 (typeattributeset cil_gen_require mcs_constrained_type)
 (typeattributeset cil_gen_require unconfined_t)
 (typeattributeset cil_gen_require bin_t)
@@ -78,6 +83,34 @@
 (typeattributeset cil_gen_require sysctl_crypto_t)
 (typeattributeset cil_gen_require cert_t)
 (typeattributeset mcs_constrained_type (apse_t apse_app_t apse_shim_t))
+; `apse_exec_t` is a standard application executable: it carries the
+; same attribute set the base policy gives `ssh_exec_t` /
+; `useradd_exec_t` / `sudo_exec_t` (`seinfo -t <type> -x`). That set
+; is what a module type must opt into, because module types join no
+; attribute by default (LESSONS #53). What the set does and does not
+; do:
+;   - `file_type`: `unconfined_t` (via `files_unconfined_type`) gets
+;     the full file lifecycle on the binary — including the `unlink`
+;     a bare module type misses. In the base policy the only
+;     user-space writer of `file_type` is `unconfined` itself
+;     (`kernel_t` is the kernel; `init_t`/`secadm_t`/`setfiles_t`
+;     are relabel-only), and no write grant on any of these
+;     attributes reaches `apse_t`/`apse_app_t` — so membership does
+;     not open a write hole in the privileged binary.
+;   - `exec_type`/`entry_type`/`application_exec_type`: mark the type
+;     as an executable to the policy family (universal read, the
+;     `exec_type:file execute` grants) — parity with every other
+;     app binary.
+;   - `non_auth_file_type`/`non_security_file_type`: the remaining
+;     members of the standard set; their write grants (tmpfiles,
+;     boolean-gated file sharing) apply identically to
+;     `ssh_exec_t` and friends, so this is parity, not a delta.
+(typeattributeset file_type (apse_exec_t))
+(typeattributeset exec_type (apse_exec_t))
+(typeattributeset entry_type (apse_exec_t))
+(typeattributeset application_exec_type (apse_exec_t))
+(typeattributeset non_auth_file_type (apse_exec_t))
+(typeattributeset non_security_file_type (apse_exec_t))
 ; this kernel's process class splits `signal` into signull (kill 0),
 ; sigkill and signal. The base policy's mlsconstrain list constrains
 ; ptrace/signal/sigkill/sigstop — but NOT signull. A module CIL cannot
@@ -88,17 +121,16 @@
 ; subject may kill -0 any apse process, including another
 ; instance's. That is a documented limitation of the module-based
 ; approach, not a bug — see LESSONS #33.
-(allow unconfined_t apse_exec_t (file (entrypoint execute getattr map open read)))
-; installing / updating / removing the binary (sudo from the user
-; shell; cp probes the target with an ioctl, the update writes it,
-; rm needs unlink). The base `files_unconfined_type file_type:file`
-; grant (which is how unconfined deletes e.g. `ssh_exec_t`) does not
-; reach this type — it is a *module* type, not a `file_type` member,
-; and it is deliberately kept out of that attribute so a confined
-; domain holding file_type write cannot modify the privileged binary.
-; So `unlink` must be granted explicitly here, as it is for
-; `apse_shim_t` below.
-(allow unconfined_t apse_exec_t (file (write setattr relabelfrom relabelto ioctl unlink)))
+; the full file lifecycle on the binary (install/update/delete from
+; the user shell — cp's `ioctl` probe, the update's write, `rm`'s
+; unlink) now comes from `file_type` membership: the same
+; `files_unconfined_type` catch-all by which unconfined deletes
+; `ssh_exec_t`. The one permission attribute membership does not
+; cover is `entrypoint`, granted explicitly the way the base policy
+; does for standard binaries (per-type, from the defining module —
+; see the role grants on `sudo_exec_t`): it is required for the
+; `unconfined_t -> apse_t` transition below.
+(allow unconfined_t apse_exec_t (file (entrypoint)))
 ; the user can signal apse processes (stop / cleanup of runs;
 ; kill -9 needs the explicit sigkill, strace probes with signull)
 (allow unconfined_t apse_t (process (getattr noatsecure rlimitinh siginh transition signal sigkill signull)))
