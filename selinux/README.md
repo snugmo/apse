@@ -244,12 +244,13 @@ premise was wrong — the dir is `s0` by construction.)
 
 ## Denial-tuning notes (2026-11-12 round)
 
-The grant set above is the output of three enforcing-mode tuning
-rounds: the original one (2026-10-29) and two user-reported ones
-(both 2026-11-12: `df`, `ls -la /dev`, and interactive fish in the
+The grant set above is the output of four enforcing-mode tuning
+rounds: the original one (2026-10-29) and three user-reported ones
+(all 2026-11-12: `df`, `ls -la /dev`, and interactive fish in the
 sandbox; then the `/proc` self links, `/proc/net`, and the
-top-level `/proc` entries). The shapes those rounds added are the
-ones a future denial is most likely to be:
+top-level `/proc` entries; then the attribute-based redesign of
+that top-level stat). The shapes those rounds added are the ones
+a future denial is most likely to be:
 
 - **`statfs`/`df` targets the *filesystem*, not the file.** `df`
   (even with an explicit path) stats the root of every mount it
@@ -311,15 +312,24 @@ ones a future denial is most likely to be:
   `proc_net_t` for the content. Read-only: the content is
   network state (a private netns in the sandbox — loopback only);
   no write is granted.
-- **Top-level `/proc` entries have their own dedicated types.**
-  Not everything is `proc_t`: `/proc/irq` → `sysctl_irq_t`,
-  `/proc/pressure` → `proc_psi_t`, `/proc/kmsg` → `proc_kmsg_t`,
-  `/proc/mtrr` → `mtrr_device_t`, `/proc/kcore` → `proc_kcore_t`,
-  `/proc/mdstat` → `proc_mdstat_t`, `/proc/kallsyms` →
-  `system_map_t`, `/proc/sysrq-trigger` → `sysctl_t`. `ls /proc`
-  stats every entry: `getattr` only per type (stat, no content
-  read) — deliberately no `open`/`read` on `kcore` (kernel
-  memory) or `kmsg` (kernel log).
+- **Top-level `/proc` entries are targeted by the base-policy
+  attributes, not by type.** Not everything is `proc_t`: the
+  `/proc/*` genfs entries carry the **`proc_type`** family
+  (`proc_t`, `proc_net_t`, `proc_kcore_t`, `proc_kmsg_t`,
+  `proc_mdstat_t`, `proc_psi_t`, `proc_afs_t`, `proc_security_t`,
+  `system_map_t`, `proc_numa_t`, …) and the `/proc/sys/*` subtree
+  the **`sysctl_type`** family (`sysctl_t`, `sysctl_irq_t`,
+  `sysctl_kernel_t`, `sysctl_vm_t`, `sysctl_fs_t`, …) — the same
+  two attributes the base policy itself uses for exactly this
+  surface (`kern_unconfined` and `container_userns_t` each target
+  `proc_type` once, never per type). `ls /proc` stats every entry,
+  so the grant is `getattr` per class on each attribute
+  (`file`/`dir`/`lnk_file` — the CIL reader takes one class per
+  `allow`, LESSONS #67), which covers *current and future* entries
+  with no new rule; content access (`open`/`read`) stays per-type
+  and deliberately excludes `kcore` (kernel memory) and `kmsg`
+  (the kernel log). The one `/proc` type in neither attribute —
+  `mtrr_device_t` (`/proc/mtrr`) — keeps a single-rule `getattr`.
 
 Not fixed (deliberate, 2026-11-12): the `find /` class — a
 whole-filesystem traversal produces thousands of `getattr` on the

@@ -113,6 +113,8 @@
 (typeattributeset cil_gen_require user_fonts_cache_t)
 (typeattributeset cil_gen_require fs_t)
 (typeattributeset cil_gen_require filesystem_type)
+(typeattributeset cil_gen_require proc_type)
+(typeattributeset cil_gen_require sysctl_type)
 (typeattributeset cil_gen_require sysctl_t)
 (typeattributeset cil_gen_require sysctl_fs_t)
 (typeattributeset cil_gen_require sysctl_kernel_t)
@@ -685,16 +687,25 @@
 (allow apse_app_t proc_net_t (file (getattr open read)))
 (allow apse_app_t proc_net_t (dir (getattr open read search)))
 ; `ls /proc` stats every top-level entry, most with their own
-; type — getattr only (stat, no content): kcore is kernel memory
-; and kmsg the kernel log, so no open/read is granted on them
-(allow apse_app_t sysctl_irq_t (dir (getattr)))
-(allow apse_app_t proc_psi_t (dir (getattr)))
-(allow apse_app_t proc_kmsg_t (file (getattr)))
+; type — getattr only (stat, no content). The two base-policy
+; attributes collapse the whole family: `proc_type` (the /proc/*
+; genfs types) and `sysctl_type` (the /proc/sys/* subtree types).
+; `getattr` is the stat — it carries no content, so the grant
+; covers every *current and future* entry (a new /proc type needs
+; no new rule — that was the whack-a-mole of the earlier tuning
+; rounds; the base policy expresses the same as one attribute,
+; e.g. container_userns_t targets `proc_type` once). The libsepol
+; CIL reader takes ONE class per `allow` (LESSONS #67), so each
+; attribute still spells one rule per class. Content access
+; (open/read) stays per-type below. `mtrr_device_t` is the one
+; /proc type in neither attribute — a single-rule exception.
+(allow apse_app_t proc_type (file (getattr)))
+(allow apse_app_t proc_type (dir (getattr)))
+(allow apse_app_t proc_type (lnk_file (getattr)))
+(allow apse_app_t sysctl_type (file (getattr)))
+(allow apse_app_t sysctl_type (dir (getattr)))
+(allow apse_app_t sysctl_type (lnk_file (getattr)))
 (allow apse_app_t mtrr_device_t (file (getattr)))
-(allow apse_app_t proc_kcore_t (file (getattr)))
-(allow apse_app_t proc_mdstat_t (file (getattr)))
-(allow apse_app_t system_map_t (file (getattr)))
-(allow apse_app_t sysctl_t (file (getattr)))
 ; `df` (even with an explicit path) `statfs`es the root of every
 ; mount it sees; the statfs is mediated against the *filesystem*
 ; type of the mounted fs — the `filesystem` class, the
