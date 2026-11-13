@@ -17,7 +17,10 @@ debugging: a boolean-gated `ptrace` grant + `debug` profile/flag) —
 gdb/strace inside a confined run; **8.8** (an `exec_type`-wide exec
 grant) — the `ip` / `hostname` denial class: one attribute grant
 instead of chasing 141 distribution exec labels; the per-tool work
-moves to functional grants (netlink, `sethostname`). Deferred denial
+moves to functional grants (netlink, `sethostname`); **8.9** (drop
+the `home = "host"` profile mode, decision #44) — the private home
+is the only mode: the `home` field, its mode branches, and the
+14 host-mode module rules go. Deferred denial
 classes (user's call, accepted — not sandbox use cases): fish's
 completion *executing* the enumerated admin tools, the `find /` class,
 the metadata sweeps (`getfattr -R`; the python3 man readlink sweep).
@@ -627,6 +630,7 @@ env vars, network mode, gpu, tmp size, home mode — decision #43:
 | 41 | A run must not orphan the app's namespace when the pipeline dies mid-run | **Run #1**: S died silently mid-run (the cause was never identified — no core, no journal event, no error line), A died shortly after, and the app's pidns (B is its PID 1 — #13: immune to default-action signals from outside) ran on forever; the only trace was the sub-cgroup `rmdir` failing `ENOTEMPTY`. Two holes can produce that cascade; both are closed (v2.15, LESSONS #37). (a) **`EINTR` was fatal in both reapers' blocking `waitpid`s** (S's through `?`, A's through a 126 exit): both block *exactly* the three signals they forward (the signalfd is their sole consumer), so every other signal is at default disposition and *delivered* — and a delivered signal interrupts `wait4`; `waitpid_retry` loops on `EINTR` in both (a dead A reaps nothing; a dead S takes the 2 s KILL escalation — the only thing keeping B finite). (b) **No backstop for any other S exit with the app alive** (an error `?`, a panic, a dead A reaped by S): the `AppKillGuard` is armed when the handoff completes and dropped at run's end; its `Drop` reads the instance sub-cgroup's `cgroup.procs` (recursive on cgroup2 — A + B + every descendant) and SIGKILLs whatever is alive. It does *not* rely on the kernel's zap of a dying pidns init (#14: on 7.2.11 strays reparent and survive); on the normal path the sweep is an empty no-op, and it fires — loudly — only when a live process is found, i.e. exactly the incident. **Field-verified** by SIGKILL-ing A (old code: B+child immortal, `rmdir` `ENOTEMPTY`; new code: no process left). **Remaining boundary:** a *default-terminate* signal **to S itself** kills the guard with it (`Drop` runs only on unwinding exits, not on a fatal-signal death) — the actual run-#1 shape; closed by the `PR_SET_PDEATHSIG` cascade (#42). |
 | 42 | A S-death the `AppKillGuard` cannot intercept (a default-terminate signal to S itself) must still end the app (the run-#1 boundary left by #41) | The guard dies with S, so this needs a kernel-level `PR_SET_PDEATHSIG` cascade where each process's death propagates to the process it supervises (`src/pdeathsig.rs`; v2.16). **A←S:** A sets `pdeathsig = SIGUSR1` right after its first fork (before the unshare; A never execs, so it survives). Deliberately USR1, not TERM: A keeps the pre-fork TERM/INT/HUP block (it must survive a group-wide Ctrl-C until it reaps B), a pdeathsig that lands in a block stays *pending* forever, and nothing else in the pipeline sends USR1 — so the signal means exactly "S is gone". The handler is installed *after* the second fork (B does not inherit it — B's USR1 stays at its default-kill disposition, the pre-exec answer to "A is gone") and only stores a flag; the delivery `EINTR`s A's blocking `waitpid`, `waitpid_retry` reports it *unwrapped*, and A kills B and exits 137. **B←A:** 7.2 `fork` *resets* `pdeath_signal` to 0 (not inherited), so B re-arms USR1 itself right before its exec; a confined exec changes the process's SID, and `selinux_bprm_committing_creds` **unconditionally** zeros pdeathsig on *any* SID change (`security/selinux/hooks.c:2545`, `4ac212ad4e8f`) — so an `LD_PRELOAD` shim re-arms it after the exec. Of the 7.2.11 clearing paths (a *denied* `noatsecure` — granted on `apse_t → apse_app_t` but not on the `xserver_t` transition; an actual credential change — does not fire, same uid; the unconditional SID-change clear) none fire on a *same-domain* exec, so the belt survives: the shim is built only in confined mode (field-verified necessary, LESSONS #19-#20), where `ensure_shim` also relabels the `.so` to `apse_shim_t` and compiles it under a *pinned* exec context (LESSONS #41-#42). The same module serves the `xwayland` satellite (`SIGTERM`); the shim file is signal-suffixed. **Field-verified on both legs (2026-11-03, v2.17, LESSONS #44):** SIGKILL S → the belt's USR1, A's handler tears B down; SIGKILL A → the belt's USR1 observed in B (strace `si_code=SI_USER`, `si_pid=0` — the cross-pidns pdeathsig marker, a kernel-internal delivery invisible to the audit exit filter), and the `AppKillGuard` sweep ends the run, no orphans. The one piece not cleanly isolated (not load-bearing while the guard exists): B's own USR1-terminate disposition (B resumed via `restart_syscall` — an `SA_RESTART` action is suspected — and died on the guard's KILL, not the belt's). |
 | 43 | The app's `$HOME` and XDG dirs: the real home, or a private per-app state? | **Default: a private per-app state tree** (2026-11-11; the container-era per-app home volume, re-implemented as binds). The profile's `home` mode defaults to `"private"` (ad-hoc and built-in): S creates, before the first fork, a **per-app (not per-instance)** tree at `$XDG_STATE_HOME/apse/<app-id>/` (home/config/cache/data/state subdirs, all 0700 — with the default state dir, `$HOME/.local/state/apse/<app-id>/`) and never removes it — it *is* the app's persistent state; the rootfs build (step 7) binds its subdirs over `$HOME` and the XDG locations. Order and traps: the tree is carried into the step-1 scratch *before* the real home is replaced (a source resolved after that bind would hit the private copy — #28's trap); the binds go home → config → cache → data → **state last** (a state dir may nest under the data dir, and each target must resolve after the binds beneath it); targets under the home are pre-created by S, a custom XDG outside the home only when it exists. The app's environment keeps its historical XDG strings — the redirect is invisible. **CWD:** in private mode B `chdir`s to the app's home before the exec — the inherited CWD is the host's launch dir, which disappears when the real home is replaced, and an app that forks and `chdir(cwd)`s before its exec (foot's `slave_spawn`) dies on the bad chdir; host mode keeps the inherited CWD. `home = "host"` keeps the pre-8.3 behaviour (real dirs rw self-bound); the profile's `rw_binds` layer on top in both modes. Landlock: one ReadWrite grant per existing target (the same strings in S and B resolve through the binds to the state-tree inodes); the mode is validated before the fork. **Confined mode** (refined v2.21): the tree is the module's dedicated `apse_state_t` — the `apse` root that `apse_t` creates under `~/.local/state` (`gconf_home_t`) is *born* `apse_state_t` via a named filetrans (the five-field `typetransition` in this module store's CIL dialect — no `filetrans` keyword; on this kernel `filecon` does not label created inodes), and the no-rule default makes the whole subtree inherit it; S's setxattr walk does the one-time migration of a pre-module (gconf-labelled) tree and self-heals stragglers. S gains the dir create/setattr/`mounton`/relabel grants; the app gains the full file lifecycle on the tree (incl. fish's `lock`/`watch`) plus `entrypoint`/`execute`/`execute_no_trans` on `apse_state_t` files (B's exec-context exec, and its own children) and the `apse_t → apse_app_t` fallback transition; `unconfined_t` gains the user's inspection lifecycle (full grant list: `selinux/README.md`). Field-verified (2026-11-12): `ps ax` directly through a confined `apse run`, zero denials. **Tests:** the rootfs reference test asserts a `$HOME` write lands in the per-app state tree, never the real home; the integration suite adds a hermeticity marker and a private-home write to the Landlock probe. |
+| 44 | The `home = "host"` profile mode (the legacy half of #43) | **Dropped** (2026-11-13, task 8.9): since v2.20 the private home has been the default and the only mode in use; `"host"` was pre-8.3 compatibility. Its costs — 14 module rules (the app-side `*_home_t` dir/file grants, the `apse_t → {user_home_t, gconf_home_t}` app transitions and their `process` mirrors, none of which a private-home sandbox can reach), mode branching in `policy.rs` / `mounts.rs` / `mod.rs`, and doc spread over four files — outweigh a convenience mode the threat model describes as "the isolation is from *other* users and the *system*, not from you". The profile's `home` field is removed entirely: `deny_unknown_fields` makes a `home = "…"` line a hard parse error, which is the migration signal (no built-in profile sets the field). The private home becomes unconditional: `prepare_app_state` always runs, the step-1 carry and the step-7 binds have no branch, and B's pre-exec `chdir` is unconditional. **Kept, because mode-independent:** the supervisor-side home rules (profile lookup and traversal, the state-tree creation, the one-time relabel migration walk) and the app-side *path-traversal* grants (`home_root_t` / `user_home_dir_t` — the bind target still sits at the real `/home/<user>` path). An app wanting specific *non-home* host paths still has `rw_binds`; home-subtree paths stay unreachable by design (that is the isolation). |
 
 ## 7. Phases & task list
 
@@ -1446,6 +1450,61 @@ audited as a write).
       for the tools actually used; (f) CI unaffected (the
       test-suite binary is unrelabeled). Document the grant and
       the setuid-stripping invariant in `selinux/README.md`.
+- [ ] 8.9 *(future)* Drop the `home = "host"` profile mode — per
+      decision #44 the private home is the only mode. **What
+      goes** (everything host-mode only; the private home is
+      untouched): (1) *Code:* `src/profile/mod.rs` — the `home`
+      field, its `"private"` default, and `private_home()`; with
+      `deny_unknown_fields`, a `home = "…"` line in a user TOML
+      is now a hard parse error — the migration signal (no
+      built-in profile sets the field). `src/sandbox/policy.rs` —
+      the `home.as_str()` validation match and its host-mode
+      comment; the home/XDG landlock loop stays (the same strings
+      resolve to the state-tree inodes in B's namespace either
+      way). `src/sandbox/mounts.rs` — three branches become
+      unconditional: `prepare_app_state`'s early return, the
+      step-1 state-tree carry, and step 7's else half (the legacy
+      rw self-binds of home/config/cache/state/data); rewrite the
+      step-7 comment and the module doc to the single mode.
+      `src/sandbox/mod.rs` — B's pre-exec `chdir` (the
+      private-home branch) becomes unconditional (the warn
+      fallback stays). (2) *Module — 14 rules* (the app-side
+      home family; every supervisor-side home rule stays): the
+      `apse_app_t` dir+file grants on `user_home_t` /
+      `cache_home_t` / `config_home_t` / `data_home_t` /
+      `gconf_home_t` (~858-880), the two `apse_t →
+      {user_home_t, gconf_home_t}` `apse_app_t` typetransitions
+      (~271/276 — the app-binary-in-the-real-home case) and
+      their paired `process (noatsecure rlimitinh siginh)`
+      mirrors (~297/298; no process of those types can exist in a
+      private-home sandbox). Stays: the supervisor-side profile
+      lookup and traversal (~437-450), the state-tree creation
+      (the named filetrans ~294 + its parent-dir grant ~460), the
+      one-time relabel migration walk (~501-510), and the
+      app-side *path-traversal* grants (`home_root_t` /
+      `user_home_dir_t` ~856/857 — the bind target still sits at
+      the real `/home/<user>` path). The home-family
+      `cil_gen_require` lines stay (still referenced). (3)
+      *Docs:* README (the rootfs-build step-7 description, the
+      profile example, and the threat-model home paragraph — the
+      `home = "host"` opt-in sentence goes), `selinux/README.md`
+      (the confined-mode summary line), and this file's
+      architecture-table row. **Breaking change (accepted,
+      personal repo):** a profile TOML with `home = "host"` stops
+      parsing (unknown field) — delete the line; an app wanting
+      specific *non-home* host paths still has `rw_binds`, while
+      home-subtree paths are unreachable by design (that is the
+      isolation). **Verify:** (a) `cargo test --locked --
+      --test-threads=1` green with the rewritten profile test
+      (asserts `home = …` is rejected); (b) enforcing confined
+      live run — reinstall the module per `selinux/README.md`
+      (Operating modes) and run a GUI app (foot) plus a shell
+      app under the default profile: zero new denials, audit
+      baseline flat — this exercises every kept supervisor rule
+      (profile read, state-tree creation, the migration walk,
+      both traversal families); (c) an unconfined run unchanged;
+      (d) a `home = "host"` profile fails at parse with the
+      unknown-field error.
 
 ## 8. Risks / things to watch
 
