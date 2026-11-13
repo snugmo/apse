@@ -77,11 +77,11 @@ the module uses them; otherwise the file is bare statements.
   namespace/userns/cap setup, and the `/proc/self/exe` re-execs.
 - `apse_app_t` — sandboxed-app domain. B execs the app while in
   `apse_t`; the app (and its subprocesses) land here via the
-  `bin_t`/`user_home_t`/`gconf_home_t`/`apse_state_t` transition.
+  `bin_t`/`shell_exec_t`/`apse_state_t` transition.
   "Confined user app": instance dir, /tmp, /dev nodes, /proc /sys
   /cgroup /etc, home (the private per-app state tree —
-  `apse_state_t` — by default, decision #43; the real home dirs with
-  `home = "host"`), system libs, session bus, loopback network, and
+  `apse_state_t`, decision #43), system libs, session bus, loopback
+  network, and
   `statfs` on every mounted filesystem type (`filesystem_type` — the
   `df` surface; see the tuning notes below). Its *self*-grants are
   the full base-policy `domain` set, mirrored explicitly (v2.25 —
@@ -177,8 +177,8 @@ sandboxed app and the helpers it or the pipeline exec run as
 the sandbox is still the namespaces + nono landlock/seccomp
 (decision #27) — the module is a second, compositable layer.
 
-If an app binary carries a type other than `bin_t`/`user_home_t`/
-`gconf_home_t`/`apse_state_t` (check with `ls -lZ <app>`), add a
+If an app binary carries a type other than `bin_t`/`shell_exec_t`/
+`apse_state_t` (check with `ls -lZ <app>`), add a
 `(typetransition apse_t TYPE process apse_app_t)` line (plus the
 matching process/file allows) to `apse.cil` and reinstall.
 

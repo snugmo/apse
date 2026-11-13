@@ -26,22 +26,13 @@ pub(crate) struct Profile {
     pub gpu: bool,
     /// Size of the fresh `/tmp` in MiB (`0` = the kernel default).
     pub tmp_size_mib: u64,
-    /// The app's `$HOME` and XDG dirs: `"private"` (the default) —
-    /// the app gets its own per-app state tree under
-    /// `$XDG_STATE_HOME/apse/<app-id>/`, bound over the standard
-    /// locations: its `$HOME` is persistent across runs and
-    /// *disconnected* from the real home and the host desktop
-    /// (decision #43); `"host"` — the real `$HOME` and XDG dirs are
-    /// rw self-bounds (the pre-8.3 behaviour).
-    pub home: String,
     /// Read-only paths, e.g. the app's install dir (`/opt/<app>`).
     /// Everything under `/` is already ro from the recursive
     /// self-bind; this list documents the app's dir and exempts it
     /// from the `/opt/*` mask.
     pub ro_binds: Vec<String>,
-    /// Extra writable self-binds, on top of the app's home/XDG set
-    /// (the private per-app tree by default, the real dirs with
-    /// `home = "host"`).
+    /// Extra writable self-binds, on top of the app's private
+    /// per-app home/XDG tree (decision #43).
     pub rw_binds: Vec<String>,
     /// Extra paths to mask (an empty tmpfs over them), on top of the
     /// defaults (`/root`, `/home/*` except ours, `/boot`, `/var`,
@@ -66,7 +57,6 @@ impl Default for Profile {
         Self {
             gpu: true,
             tmp_size_mib: 2048,
-            home: "private".to_string(),
             ro_binds: Vec::new(),
             rw_binds: Vec::new(),
             mask: Vec::new(),
@@ -86,12 +76,6 @@ impl Profile {
             gpu: false,
             ..Self::default()
         }
-    }
-
-    /// The app gets a private per-app home/XDG tree (decision #43)
-    /// rather than the real home rw self-bound.
-    pub(crate) fn private_home(&self) -> bool {
-        self.home == "private"
     }
 }
 
@@ -150,17 +134,17 @@ mod tests {
     }
 
     #[test]
-    fn home_defaults_to_private_and_the_mode_parses() {
-        // The default (and every built-in) is the private per-app
-        // home (decision #43).
-        assert!(Profile::default().private_home());
-        assert!(Profile::adhoc().private_home());
-        assert!(builtin("rustrover").unwrap().private_home());
-        let p: Profile = toml::from_str("home = \"host\"").expect("a host home mode must parse");
-        assert_eq!(p.home, "host");
-        assert!(!p.private_home());
-        let p: Profile = toml::from_str("").expect("an empty profile must parse");
-        assert!(p.private_home(), "the default must be the private home");
+    fn the_home_field_is_rejected() {
+        // Decision #44: the private home is the only mode (task 8.9),
+        // so the removed `home` field is a hard parse error — the
+        // migration signal for a user TOML that still sets it.
+        let err = toml::from_str::<Profile>("home = \"host\"").unwrap_err();
+        assert!(
+            err.to_string().contains("home"),
+            "the error must name the unknown field: {err:?}"
+        );
+        let err = toml::from_str::<Profile>("home = \"private\"").unwrap_err();
+        assert!(err.to_string().contains("home"));
     }
 
     #[test]

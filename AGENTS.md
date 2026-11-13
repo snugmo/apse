@@ -126,13 +126,14 @@ phase 8.1).**
   `EINTR` makes `waitpid_retry` escape so A kills B and exits 137;
   B re-arms its own link pre-exec and, in confined mode, an
   `LD_PRELOAD` shim re-arms it across the exec (see `pdeathsig.rs`);
-  in private-home mode (#43) B also `chdir`s to the app's home
-  before the exec — the inherited CWD is the host's launch dir, which
-  the build replaces, and fork+`chdir(cwd)`+exec apps (foot's
-  `slave_spawn`) would otherwise die on the vanished path — sd-notify,
-  #33)
+  B also `chdir`s to the app's home before the exec (#43: the
+  private per-app home is the only mode since #44) — the
+  inherited CWD is the host's launch dir, which the build replaces,
+  and fork+`chdir(cwd)`+exec apps (foot's `slave_spawn`) would
+  otherwise die on the vanished path — sd-notify, #33)
 - `src/profile/` — per-app TOML profiles (`gpu`, `ro_binds`, `rw_binds`,
-  `mask`, `env`, …; `deny_unknown_fields`)
+  `mask`, `env`, …; `deny_unknown_fields`; the app's home is always
+  the private per-app tree — #43/#44)
 - `src/systemd.rs` — the transient session-bus scope (phase 6.1, #35)
 - `src/testutil.rs` — shared `#[cfg(test)]` helpers (env locking,
   TmpDir, the LISTEN-FD / sandbox locks)

@@ -2,26 +2,29 @@
 
 ## Status
 
-Current: **v2.30** (2026-11-13; enforcing, kernel 7.2.15).
-Per-instance `/etc` files (task 8.10): `hosts`/`hostname` are
-generated into the per-instance runtime dir and bound over the
-self-bind `/etc`, so the sandbox's UTS name resolves on loopback
-from `files` with no DNS fallback (read-only: the Landlock file
-grants; in confined mode `apse_etc_t`, born by a named filetrans
-under the runtime dir's `user_tmp_t`). Underneath, the module
-state is v2.29: the app domain carries the base `domain`
-attribute's file-read set *as written* on `base_file_type` /
-`base_ro_file_type` (v2.27) — read-only, the least privilege an
-ordinary confined user domain has on the basic trees of the
-default installation — plus (v2.29) the `non_security_file_type`
-**metadata-only** grants (lstat + readlink: the v2.26 `????`
-thread's resolution, the dedicated /etc config types clear again,
-the remainder is the audit config and the four shadow entries that
-`domain` itself cannot stat) and the cert / /dev-node / devpts
-grants aligned to the base session profiles (the cert grants now
-ride the `cert_type` attribute, so the per-service cert stores
-are covered). The v2.29 tidy pass dropped 15 subsumed per-type
-rules and added 5 attribute-scoped ones (net −10: 295 → 285);
+Current: **v2.31** (2026-11-13; enforcing, kernel 7.2.15).
+The `home = "host"` profile mode is dropped (task 8.9, decision
+#44): the private home (decision #43) is the only mode — the
+`home` field is gone (a `home = "…"` line in a user TOML is a
+hard parse error, `deny_unknown_fields` — the migration signal),
+the mode branches in `policy.rs` / `mounts.rs` / `sandbox/mod.rs`
+are unconditional, and the module's 14 app-side home-family
+rules went (the supervisor-side home rules and the app's
+path-traversal grants stay; two traversal-only grants went in —
+the shim compiler's `collect2`/`ld` children probe the real
+home while linking). Underneath, v2.30's per-instance
+`/etc` files (`hosts`/`hostname` generated into the per-instance
+runtime dir and bound over the self-bind `/etc`, so the
+sandbox's UTS name resolves on loopback from `files` with no DNS
+fallback; read-only: the Landlock file grants, `apse_etc_t` in
+confined mode) and the module state is v2.29: the app domain
+carries the base `domain` attribute's file-read set *as written*
+on `base_file_type` / `base_ro_file_type` (v2.27), plus
+(v2.29) the `non_security_file_type` **metadata-only** grants
+(lstat + readlink), and the cert / /dev-node / devpts grants
+aligned to the base session profiles (the cert grants ride the
+`cert_type` attribute). The v2.30 pass was net +17 (285 → 302);
+this one is net −12 (302 → 290).
 `exec_type:file:getattr` *stays* — it is the sole stat() path to
 the 140 per-purpose exec types in the bin/libexec trees (8.8's
 `exec_type`-wide exec grant absorbs it). The broad `file_type:*
@@ -38,16 +41,67 @@ debugging: a boolean-gated `ptrace` grant + `debug` profile/flag) —
 gdb/strace inside a confined run; **8.8** (an `exec_type`-wide exec
 grant) — the `ip` / `hostname` denial class: one attribute grant
 instead of chasing 141 distribution exec labels; the per-tool work
-moves to functional grants (netlink, `sethostname`); **8.9** (drop
-the `home = "host"` profile mode, decision #44) — the private home
-is the only mode: the `home` field, its mode branches, and the
-14 host-mode module rules go. Deferred denial
+moves to functional grants (netlink, `sethostname`). Deferred denial
 classes (user's call, accepted — not sandbox use cases): fish's
 completion *executing* the enumerated admin tools, the `find /` class,
 the metadata sweeps (`getfattr -R`; the python3 man readlink sweep).
 
 ### Change log (newest first)
 
+- **v2.31** (2026-11-13; enforcing): task 8.9, the `home = "host"`
+  profile mode is dropped (decision #44): the private home
+  (decision #43) is the only mode. *Code:* the profile's `home`
+  field is removed — a `home = "…"` line in a user TOML is now a
+  hard parse error (`deny_unknown_fields`; the migration signal,
+  no built-in profile sets the field, the rewritten profile test
+  asserts the rejection). The mode branches are unconditional:
+  `prepare_app_state` always runs, the step-1 state-tree carry and
+  the step-7 home/XDG binds have no branch (the legacy rw
+  self-binds are gone), the `policy.rs` home/XDG Landlock loop
+  stays (the same sandbox-side strings resolve to the state-tree
+  inodes in B's namespace), and B's pre-exec `chdir` to the
+  app's home is unconditional (the warn fallback stays).
+  *Module* (net −12: 302 → 290): the 14 app-side home-family
+  rules go — the `apse_app_t` dir+file grants on
+  `user_home_t` / `cache_home_t` / `config_home_t` /
+  `data_home_t` / `gconf_home_t`, the `apse_t → {user_home_t,
+  gconf_home_t}` `apse_app_t` typetransitions and their paired
+  `process (noatsecure rlimitinh siginh)` mirrors (no process of
+  those types can exist in a private-home sandbox); the
+  `apse_state_t` grants now carry the app's whole home, incl.
+  fish's `lock`/`watch`/`watch_reads` (this kernel's inotify
+  check is `watch_reads`, not `watch`), `ioctl` (dash probes the
+  script file it is running with TCGETS — a no-op on regular
+  files, denied only in the audit sense), the
+  `setattr`/`rename` pair (fish's atomic save), and
+  `entrypoint`/`execute`/`execute_no_trans`. Two
+  traversal-only grants go in: `user_home_t` / `gconf_home_t`
+  `dir (getattr search)` — the on-demand shim compiler is
+  vforked by S (the `cc` stays `apse_t` under the pinned exec
+  context, LESSONS #42), but its `collect2`/`ld` children hit the
+  `apse_t → bin_t` transition and run as `apse_app_t` in the
+  *host* mount view, probing the real home's `.local`/`.cargo`/
+  `src` while linking; traversal-only is safe because the
+  in-sandbox app resolves `/home/<user>` to the private tree and
+  can never reach those inodes. **Kept, mode-independent:** the
+  supervisor-side home rules (profile lookup and traversal, the
+  state-tree creation filetrans, the one-time relabel migration
+  walk) and the app-side *path-traversal* grants
+  (`home_root_t` / `user_home_dir_t` — the bind target still sits
+  at the real `/home/<user>` path); the home-family
+  `cil_gen_require` lines stay (still referenced, both by the
+  supervisor-side rules and the new traversal grants).
+  Field-verified enforcing: the probe (a `python3` script in a
+  fresh instance) exercises the whole home surface — write,
+  `flock`+inotify, atomic save, exec-from-home, path traversal —
+  with zero AVCs (a mid-loop `sudo` run against `/root`'s
+  `admin_home_t` correctly denied: `apse_t` has no grant there,
+  as intended). **Breaking
+  change (accepted, personal repo):** a profile TOML with
+  `home = "…"` stops parsing — delete the line; an app wanting
+  specific *non-home* host paths still has `rw_binds`, while
+  home-subtree paths stay unreachable by design (that is the
+  isolation).
 - **v2.30** (2026-11-13; enforcing): task 8.10, the per-instance
   `/etc` files. `hosts`/`hostname` (constant content: the
   localhost lines + the UTS name on `127.0.0.1` — the loopback
@@ -692,7 +746,7 @@ root-in-ns behaviour.
 | `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc` | ro-binds | `/etc` as-is; passwd/group map consistently through the uid/gid maps |
 | `/etc/hosts`, `/etc/hostname` | single-file `MS_BIND` from the per-instance runtime dir (`<runtime-dir>/etc/`, new step 7.5 between the home binds and the `/var` mask) | task 8.10: the generated files carry the UTS name `apse-<app>-<inst>` (`127.0.0.1`), so it resolves on loopback from `files` with no DNS fallback. A single-file bind does not put the inode under the `/etc` dentry tree, so the `/etc` *dir* grants do not reach it: the file-level Landlock grants (`Read`) and `apse_etc_t` (read-only) mediate. The targets must exist on the host — a user-owned build cannot create files in the root-owned `/etc`. The sources are static for the instance's lifetime and are removed with the runtime dir on teardown |
 | app dir | ro-bind (e.g. `/opt/rustrover`) | path from the app profile |
-| app home and XDG dirs | default: binds of the per-app state tree over the standard locations; `home = "host"`: rw self-binds | **decision #43**: the default is a **private per-app** tree at `$XDG_STATE_HOME/apse/<app-id>/` bound over `$HOME` and the XDG locations (the container-era per-app home volume, re-implemented as binds; carried into the step-1 scratch before the home is replaced — #28's trap; binds go home → config → cache → data → **state last**; the app's env is unchanged — the redirect is invisible; in private mode B `chdir`s to the app's home before the exec). `home = "host"`: the real dirs rw self-bound (pre-8.3 behaviour); the profile's `rw_binds` layer on top in both modes. |
+| app home and XDG dirs | binds of the per-app state tree over the standard locations | **decision #43** (decision #44: the private home is the only mode): a **private per-app** tree at `$XDG_STATE_HOME/apse/<app-id>/` bound over `$HOME` and the XDG locations (the container-era per-app home volume, re-implemented as binds; carried into the step-1 scratch before the home is replaced — #28's trap; binds go home → config → cache → data → **state last**; the app's env is unchanged — the redirect is invisible; B `chdir`s to the app's home before the exec). The profile's `rw_binds` layer on top. |
 | masked | bind empty tmpfs over | `/root`, `/home/*` (except mapped ones), `/boot`, `/var`, `/srv`, `/media`, `/mnt`, `/opt/*` (except the app), anything the profile marks private |
 
 Then `chroot()` to the assembled root. The **host** Wayland socket is
@@ -792,10 +846,11 @@ Private-netns options (veth, pasta/slirp4netns) are a later hardening
 phase, out of scope for now.
 
 **App profiles** replace the quadlet drop-ins: TOML in
-`~/.config/apse/apps/<app-id>.toml` (ro binds, rw binds, masked paths,
-env vars, network mode, gpu, tmp size, home mode — decision #43:
-`"private"` (default) or `"host"`). New deps: `nono` (pinned),
-`toml`, `serde`, and `zbus` (Phase 6, D-Bus tier).
+`~/.config/apse/apps/<app-id>.toml` (ro binds, rw binds, masked
+paths, env vars, network mode, gpu, tmp size). The app's home is
+always the private per-app state tree (decisions #43/#44). New
+deps: `nono` (pinned), `toml`, `serde`, and `zbus` (Phase 6, D-Bus
+tier).
 
 ## 6. Decisions log
 
@@ -957,8 +1012,8 @@ env vars, network mode, gpu, tmp size, home mode — decision #43:
   Linux, #24), `/usr /lib /lib64 /bin /sbin /etc /proc /sys` Read,
   `/dev` RW, `/tmp` RW, the per-instance `/run` dir RW, the app's
   home and XDG dirs RW — one ReadWrite grant per existing home/XDG
-  target (decision #43: the private per-app tree by default; the real
-  dirs with `home = "host"`);
+  target (decision #43: the private per-app tree — the only mode
+  since #44);
   plus profile `ro_binds`→Read, `rw_binds`→ReadWrite, `mask`→no
   grant, `unix_sockets`→`allow_unix_socket`, the instance-dir subtree
   (home of the Phase-5 tagged wayland socket), network
@@ -1665,8 +1720,9 @@ audited as a write).
       for the tools actually used; (f) CI unaffected (the
       test-suite binary is unrelabeled). Document the grant and
       the setuid-stripping invariant in `selinux/README.md`.
-- [ ] 8.9 *(future)* Drop the `home = "host"` profile mode — per
-      decision #44 the private home is the only mode. **What
+- [x] 8.9 Drop the `home = "host"` profile mode (2026-11-13,
+      v2.31) — per decision #44 the private home is the only mode.
+      **What
       goes** (everything host-mode only; the private home is
       untouched): (1) *Code:* `src/profile/mod.rs` — the `home`
       field, its `"private"` default, and `private_home()`; with

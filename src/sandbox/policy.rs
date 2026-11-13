@@ -77,23 +77,15 @@ pub(crate) fn capability_set(config: &SandboxConfig, instance_dir: &Path) -> Res
     caps = caps
         .allow_unix_socket_subtree(instance_dir, UnixSocketMode::Connect)
         .with_context(|| format!("granting the socket subtree of {instance_dir:?}"))?;
-    // The profile's home mode is validated here (before the fork in
-    // S, again before the exec in B) so a bad value never reaches
-    // the mount phase.
-    match config.profile.home.as_str() {
-        "private" | "host" => {}
-        other => bail!("profile home {other:?} is not \"private\" or \"host\""),
-    }
-    // The app's home and XDG dirs (decision #43). The targets are
+    // The app's home and XDG dirs (decision #43; the private
+    // per-app home is the only mode since #44). The targets are
     // the *sandbox-side* strings (the app's env keeps them
-    // unchanged); for a private home they resolve, in B's
-    // namespace, to the per-app state tree bound over the standard
-    // locations, and one grant at the home covers the XDG submounts
-    // beneath it (Landlock matches the inode chain of the resolved
-    // path — a submount is an extra step between the granted
-    // ancestor and the file). For `home = "host"` the same strings
-    // resolve to the real dirs (the legacy grant). Only existing
-    // targets are granted: a missing custom XDG dir is not
+    // unchanged); they resolve, in B's namespace, to the per-app
+    // state tree bound over the standard locations, and one grant at
+    // the home covers the XDG submounts beneath it (Landlock
+    // matches the inode chain of the resolved path — a submount is
+    // an extra step between the granted ancestor and the file). Only
+    // existing targets are granted: a missing custom XDG dir is not
     // bind-mounted either (step 7), so granting it would be dead
     // weight (and a hard error, since `allow_path` needs a path).
     let home = std::env::var("HOME").context("HOME is required for the home grant")?;

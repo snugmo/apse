@@ -287,12 +287,6 @@
 (allow apse_t apse_app_t (process (transition dyntransition noatsecure)))
 (typetransition apse_t bin_t process apse_app_t)
 (typetransition apse_t shell_exec_t process apse_app_t)
-(typetransition apse_t user_home_t process apse_app_t)
-; the app's files in the *real* `~/.local/*` are `gconf_home_t`
-; (host mode — the gnome module's `\.local(/.*)?` filecon labels
-; all of `~/.local` but `.local/share`), so the fallback
-; transition (an exec without the exec context) covers them
-(typetransition apse_t gconf_home_t process apse_app_t)
 ; decision #43 (refined): the private home's files are
 ; `apse_state_t` — the dedicated type for the per-app state tree
 ; (see the type's comment); the same fallback transition covers
@@ -323,8 +317,6 @@
 (typetransition apse_t user_tmp_t file "hostname" apse_etc_t)
 (allow apse_app_t bin_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t shell_exec_t (process (noatsecure rlimitinh siginh)))
-(allow apse_app_t user_home_t (process (noatsecure rlimitinh siginh)))
-(allow apse_app_t gconf_home_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t apse_state_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t lib_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t usr_t (process (noatsecure rlimitinh siginh)))
@@ -1005,39 +997,38 @@
 (allow apse_app_t apse_etc_t (file (getattr open read)))
 (allow apse_app_t home_root_t (dir (getattr open read search)))
 (allow apse_app_t user_home_dir_t (dir (getattr open search read)))
-(allow apse_app_t user_home_t (dir (create getattr open search read write add_name remove_name)))
-(allow apse_app_t cache_home_t (dir (create getattr open search read write add_name remove_name)))
-; `lock`/`watch`: fish takes a lock and an inotify watch on its
-; config dir (live-reload)
-(allow apse_app_t config_home_t (dir (create getattr open search read write add_name remove_name lock watch)))
-(allow apse_app_t data_home_t (dir (create getattr open search read write add_name remove_name)))
-; `lock`/`watch`: in the private home (decision #43) fish's config
-; dir lives in this tree, so it gets the same flock/inotify grants
-; as `config_home_t` above (host mode) — live-reload
-(allow apse_app_t gconf_home_t (dir (create getattr open search read write add_name remove_name lock watch)))
-; `setattr`/`rename`: fish's atomic save — write a temp file,
-; `fchmod`/`ftruncate` it (setattr), then `rename` it over the
-; final name (variables, history, completions)
-(allow apse_app_t user_home_t (file (append create entrypoint execute execute_no_trans getattr map open read write setattr rename unlink)))
-(allow apse_app_t cache_home_t (file (append create getattr map open read write setattr rename unlink)))
-(allow apse_app_t config_home_t (file (append create getattr map open read write setattr rename unlink)))
-(allow apse_app_t data_home_t (file (append create getattr map open read write setattr rename unlink)))
+; decision #43 (and #44: the private home is the only mode): the
+; app's whole home and XDG set resolves into the per-app state
+; tree, whose inodes are `apse_state_t` — so every grant the app
+; has on its home applies here, incl. `lock`/`watch_reads` (fish
+; takes a lock and an inotify watch on its config dir — live-
+; reload; on this kernel inotify checks `watch_reads`, not
+; `watch`), the `setattr`/`rename` pair (fish's atomic save —
+; write a temp file, `fchmod`/`ftruncate` it, then `rename` it
+; over the final name), and `ioctl` (dash probes the script file
+; it is running with TCGETS — a no-op on regular files, denied
+; only in the audit sense). The `home_root_t`/`user_home_dir_t`
+; traversal above is the path prefix the app needs to reach the
+; tree's mount point (its `$HOME` string).
 ; `entrypoint`: the check of the *new* (exec-context) context at
 ; the `apse_t` → `apse_app_t` exec when B execs a file out of the
 ; private home; `execute_no_trans`: the app's own children
 ; re-execing such a file (they stay `apse_app_t` — no transition
 ; rule from the app type).
-(allow apse_app_t gconf_home_t (file (append create entrypoint execute execute_no_trans getattr map open read write setattr rename unlink)))
-; the private-home parallel: in `home = "private"` mode (the
-; default) the app's whole home resolves into the per-app state
-; tree, whose inodes are `apse_state_t` — so every grant the app
-; has on the home-dir types above applies here too, incl.
-; `lock`/`watch` (fish's config-dir live-reload) and the
-; `entrypoint`/`execute`/`execute_no_trans` file set. In host mode
-; the app never sees this type (the real home is the gconf/config/
-; cache/data family above).
-(allow apse_app_t apse_state_t (dir (create getattr open search read write add_name remove_name lock watch)))
-(allow apse_app_t apse_state_t (file (append create entrypoint execute execute_no_trans getattr map open read write setattr rename unlink)))
+(allow apse_app_t apse_state_t (dir (create getattr open search read write add_name remove_name lock watch watch_reads)))
+(allow apse_app_t apse_state_t (file (append create entrypoint execute execute_no_trans getattr ioctl map open read write setattr rename unlink)))
+; task 8.9 tuning (the zero-denial loop on the `ensure_shim`
+; compile): the on-demand shim compiler is vforked by S (the
+; `cc` itself stays `apse_t` under the pinned exec context —
+; LESSONS #42), but its `collect2`/`ld` children hit the
+; `apse_t → bin_t` transition above and run as `apse_app_t` in
+; the *host* mount view, where they probe the real home's
+; `.local`/`.cargo`/`src` while linking. Traversal-only
+; (`search`/`getattr`, no `read`): the in-sandbox app resolves
+; `/home/<user>` to the private tree and can never reach these
+; inodes, so the grant serves only those compiler children.
+(allow apse_app_t user_home_t (dir (getattr search)))
+(allow apse_app_t gconf_home_t (dir (getattr search)))
 ; `ioctl`: at exec, the loader (and some apps, e.g. nroff) probe
 ; the file with a tty ioctl (TCGETS2) — checked against the file's
 ; type (the same class as the shim's TCGETSID, LESSONS #40); the

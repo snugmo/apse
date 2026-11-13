@@ -23,12 +23,11 @@
 //!    bound unprivileged, decision #18; the binds are not ro, #21),
 //!    `/run` (fresh tmpfs carrying **only** the per-instance dir),
 //!    `/tmp` (fresh tmpfs sized by the profile).
-//! 4. The app's **home and XDG dirs**: by default (decision #43)
-//!    the per-app state tree (carried into the scratch in step 1)
-//!    is bound over `$HOME` and the XDG locations — the app's home
-//!    is a private dir, persistent across runs and disconnected
-//!    from the real home; with the profile's `home = "host"` the
-//!    standard set is instead rw self-bound. A single plain
+//! 4. The app's **home and XDG dirs** (decision #43): the
+//!    per-app state tree (carried into the scratch in step 1) is
+//!    bound over `$HOME` and the XDG locations — the app's home is
+//!    a private dir, persistent across runs and disconnected from
+//!    the real home and the host desktop. A single plain
 //!    `MS_BIND` on a path under the self-bound `/` makes it
 //!    writable again (verified on 7.2.11; the textbook
 //!    bind+`MS_REMOUNT` two-step is EPERM for mounts we do not own
@@ -128,9 +127,6 @@ pub(crate) fn app_state_dir(cfg: &SandboxConfig) -> Result<String> {
 /// `$XDG_STATE_HOME/apse` tree to the module's own `apse_state_t`
 /// ([relabel_state_tree]).
 pub(crate) fn prepare_app_state(cfg: &SandboxConfig) -> Result<()> {
-    if !cfg.profile.private_home() {
-        return Ok(());
-    }
     let root = app_state_dir(cfg)?;
     let home = std::env::var("HOME").context("HOME is required for the private home")?;
     let mut dirs = vec![root.clone()];
@@ -579,17 +575,15 @@ pub(crate) fn build_rootfs(cfg: &SandboxConfig) -> Result<()> {
     // that bind would hit the private copy and could never reach
     // back to the host tree. (The runtime-dir carry is the same
     // trap one level up, decision #28.)
-    if prof.private_home() {
-        let state_root = app_state_dir(cfg)?;
-        mount(
-            &state_root,
-            &format!("{scratch}/state"),
-            "none",
-            libc::MS_BIND,
-            "",
-        )
-        .with_context(|| format!("carrying the per-app state tree {state_root}"))?;
-    }
+    let state_root = app_state_dir(cfg)?;
+    mount(
+        &state_root,
+        &format!("{scratch}/state"),
+        "none",
+        libc::MS_BIND,
+        "",
+    )
+    .with_context(|| format!("carrying the per-app state tree {state_root}"))?;
 
     // 2) A new layer over the whole tree (one-shot recursive
     //    self-bind — verified unprivileged on 7.2.11). Not ro:
@@ -701,46 +695,27 @@ pub(crate) fn build_rootfs(cfg: &SandboxConfig) -> Result<()> {
     };
     mount("none", "/tmp", "tmpfs", 0, &data)?;
 
-    // 7) The app's home and XDG dirs.
-    //
-    //    `home = "private"` (the default, decision #43): the
+    // 7) The app's home and XDG dirs (decision #43): the
     //    per-app state tree (carried into the scratch in step 1) is
     //    bound over the standard locations — the app's `$HOME` is
     //    its own private dir, persistent across runs and
     //    disconnected from the real home and the host desktop. The
     //    home bind goes first; a XDG target under the home is
     //    resolved *through* that bind, so its content lands in the
-    //    private tree.
-    //
-    //    `home = "host"`: the legacy rw self-binds of the real
-    //    home and XDG dirs. In both modes the profile's `rw_binds`
-    //    layer on top. A single plain `MS_BIND` over the
-    //    self-bound `/` makes the path writable again — verified on
-    //    7.2.11 (no `MS_REMOUNT` step: that is EPERM for mounts we
-    //    do not own, and unnecessary).
-    if prof.private_home() {
-        for b in home_xdg_targets(&home) {
-            let src = format!("{scratch}/state/{}", b.sub);
-            // A target under the home was pre-created by S inside
-            // the private home: the bind is unconditional. A target
-            // outside the home is a real host path: bound only when
-            // it exists (the legacy guard).
-            if b.under_home || Path::new(&b.target).is_dir() {
-                mount(&src, &b.target, "none", libc::MS_BIND, "")
-                    .with_context(|| format!("binding the {} dir", b.sub))?;
-            }
-        }
-    } else {
-        for d in [
-            home.clone(),
-            env_or("XDG_CONFIG_HOME", &format!("{home}/.config")),
-            env_or("XDG_CACHE_HOME", &format!("{home}/.cache")),
-            env_or("XDG_STATE_HOME", &format!("{home}/.local/state")),
-            env_or("XDG_DATA_HOME", &format!("{home}/.local/share")),
-        ] {
-            if Path::new(&d).is_dir() {
-                mount(&d, &d, "none", libc::MS_BIND, "")?;
-            }
+    //    private tree. The profile's `rw_binds` layer on top. A
+    //    single plain `MS_BIND` over the self-bound `/` makes the
+    //    path writable again — verified on 7.2.11 (no
+    //    `MS_REMOUNT` step: that is EPERM for mounts we do not own,
+    //    and unnecessary).
+    for b in home_xdg_targets(&home) {
+        let src = format!("{scratch}/state/{}", b.sub);
+        // A target under the home was pre-created by S inside
+        // the private home: the bind is unconditional. A target
+        // outside the home is a real host path: bound only when
+        // it exists (the legacy guard).
+        if b.under_home || Path::new(&b.target).is_dir() {
+            mount(&src, &b.target, "none", libc::MS_BIND, "")
+                .with_context(|| format!("binding the {} dir", b.sub))?;
         }
     }
     for d in &prof.rw_binds {

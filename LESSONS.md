@@ -1600,3 +1600,38 @@ write-up.
    answers), so all three paths (plain `gethostbyname`,
    `gethostbyname_ex`, `getaddrinfo`) agree. — *v2.30
    (2026-11-13).*
+
+74. **A one-shot exec context (`/proc/self/attr/exec`) protects only the
+   `exec` that consumes it — grandchildren that exec later fall through
+   to the domain's default transition rules, so a compiler pinned in
+   place drags its own children into the app domain.** LESSONS #42
+   pins the shim compiler's `cc` by writing S's own `apse_t` context
+   into `attr/exec` (old SID == new SID, the fast path), but `cc`
+   vforks `collect2`/`ld` and their `exec`s come *after* the one-shot
+   context is consumed — so the module's
+   `typetransition apse_t bin_t:process apse_app_t` fires for them and
+   they run as `apse_app_t` in the **host** mount view (they inherit
+   S's real namespaces, not B's private rootfs), probing the real
+   home's `.local`/`.cargo`/`src` while linking. The fix is two
+   traversal-only grants, `user_home_t`/`gconf_home_t`
+   `dir (getattr search)` (no `read`): the in-sandbox app resolves
+   `/home/<user>` to the private tree and can never reach those
+   inodes, so the grants can only serve those compiler children. —
+   *task 8.9 tuning; `selinux/apse.cil`, the LESSONS #42
+   follow-on.*
+
+75. **On this kernel inotify watches are mediated as `file:watch_reads`
+   on the watched dir — not `watch` — and dash probes the script file
+   it is about to exec with a `TCGETS` `ioctl` (a no-op on regular
+   files, denied only in the audit sense).** `inotify_add_watch()` on
+   a dir whose grant carries `watch` but not `watch_reads` fails
+   `EPERM` (the AVC asks for `watch_reads`; inotify checks the
+   read-flavoured permission for data watches — the legacy `watch`
+   permission exists in the class definition but the check is
+   `watch_reads`). The private-home state-tree dir grant needs it
+   because fish (and other config-dir watchers) take an inotify watch
+   on their config dir for live reload. The companion file-permission
+   gap found in the same tuning loop: `ioctl` on the state-tree file
+   grant, for dash's `TCGETS` probe of the script it is running (the
+   probe's `subprocess.run([script])` → `/bin/sh`). — *task 8.9
+   tuning; `selinux/apse.cil`.*

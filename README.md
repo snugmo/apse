@@ -153,16 +153,13 @@ volumes" is gone). Working as the mount namespace's root, `A` assembles:
    `$XDG_RUNTIME_DIR` and are deliberately *invisible* here — the app
    can reach only the tagged socket.
 5. `/tmp` — a fresh tmpfs, sized by the profile (`tmp_size_mib`).
-6. The app's **home and XDG dirs** (decision #43): by default a
+6. The app's **home and XDG dirs** (decisions #43/#44): a
    **private per-app state tree** under
    `$XDG_STATE_HOME/apse/<app-id>/` (home, config, cache, data, state
    subdirs — persistent across runs, disconnected from the real home
    and the host desktop: the container-era per-app home volume,
    re-implemented as binds) is bound over `$HOME` and the XDG
-   locations; with the profile's `home = "host"`, the standard set
-   (`$HOME`, `$XDG_CONFIG_HOME`, `$XDG_CACHE_HOME`, `$XDG_STATE_HOME`,
-   `$XDG_DATA_HOME`) is rw self-bound instead. The profile's
-   `rw_binds` layer on top in both modes.
+   locations. The profile's `rw_binds` layer on top.
 7. **Per-instance `/etc` files** (task 8.10): `hosts` and `hostname`
    are generated into the per-instance runtime dir
    (`$XDG_RUNTIME_DIR/apse/<app>-<instance>/etc/`) and bound over the
@@ -429,19 +426,12 @@ it never silently degrades the sandbox. All path fields are absolute
 gpu = true                 # build /dev/dri in the sandbox (CLI --no-gpu overrides)
 tmp_size_mib = 2048        # size of the fresh /tmp (0 = kernel default)
 
-# The app's $HOME and XDG dirs (decision #43): "private" (default) —
-# its own per-app state tree under $XDG_STATE_HOME/apse/<app-id>/
-# (persistent, disconnected from the real home and the host desktop);
-# "host" — the real $HOME and XDG dirs are rw self-bounds.
-home = "private"
-
 # Everything under / is already read-only from the self-bind; ro_binds
 # document the app's install dir and exempt it from the /opt/* mask.
 ro_binds = ["/opt/rustrover"]
 
-# Extra writable self-binds, on top of the app's home/XDG set
-# (the private per-app tree by default, the real dirs with
-# home = "host").
+# Extra writable self-binds, on top of the app's private
+# per-app home/XDG tree (decision #43).
 rw_binds = []
 
 # Extra paths to mask (an empty tmpfs over them), on top of the
@@ -643,16 +633,11 @@ MCS layer is process-level, not file-level (objects created under the
   the GPU stack (driver/firmware) is an escape path this project does not
   mitigate — that is the price of "no VNC, no re-encoding".
 - **Your own home directory.** The app is your real uid, so the files
-  it creates are yours on the host. By default (decision #43) its
-  `$HOME` and XDG dirs are a **private per-app state tree**
+  it creates are yours on the host. (Decision #43) its `$HOME` and
+  XDG dirs are a **private per-app state tree**
   (`$XDG_STATE_HOME/apse/<app-id>/`), so a compromised app can tamper
   only with its own persistent state — the container-era
-  disconnection from the host desktop's configuration and state. With
-  `home = "host"` (opt-in) the **real** XDG dirs are writable instead:
-  a compromised app can read and modify your own config, cache and
-  data as you — the isolation is from *other* users and the *system*,
-  not from you — and it can tamper with files another of *your* apps
-  will read.
+  disconnection from the host desktop's configuration and state.
 - **Portal attribution.** When the `apse dbus-proxy` sidecar (Phase
   7.2) sits in front of the session bus, portal calls are proxied to
   the *host's* portal, which attributes them to the **host** desktop,
