@@ -914,7 +914,8 @@
 ; distro-relabel fragility the exec world has (task 8.8). The
 ; v2.24/2.25 /proc closure is preserved: `sysctl_kernel_t`/
 ; `sysctl_net_t`/`sysctl_vm_t` and `proc_net_t` are members of
-; neither base set.
+; neither base set. (The `????` consequence is superseded by
+; the `non_security_file_type` grant below — same day.)
 ;
 ; `apse_t` gets no such grant: the supervisor reads no broad file
 ; set, and the denial-driven principle applies to it too.
@@ -925,10 +926,22 @@
 ; `localtime`/`resolv.conf` — the task 8.10 per-instance files —
 ; plus the four shadow files), and the run produced no new
 ; denials of any kind.
+; Same-day follow-up (user's call): the `????` trade is reopened
+; at the metadata level only. `non_security_file_type` (3205
+; members, ⊂ `non_auth_file_type`; it excludes the security
+; files — `auditd_etc_t`/`auditd_log_t`, the SELinux config and
+; store types, `krb5_keytab_t`) takes `dir:getattr` (the lstat)
+; and `lnk_file:{getattr,read}` (the readlink): no `open`/`read`
+; on any class, no `file` class. The dedicated config types
+; (save `auditd_etc_t`) clear again; what stays `????` is the
+; audit config plus the four `shadow_t` auth files (both outside
+; the attribute). The `base_file_type` `lnk_file` rule goes:
+; both base sets are ⊆ the attribute, so the grant is subsumed.
 (allow apse_app_t base_file_type (dir (getattr open search)))
-(allow apse_app_t base_file_type (lnk_file (getattr read)))
 (allow apse_app_t base_ro_file_type (dir (ioctl lock read)))
 (allow apse_app_t base_ro_file_type (file (getattr ioctl lock open read)))
+(allow apse_app_t non_security_file_type (dir (getattr)))
+(allow apse_app_t non_security_file_type (lnk_file (getattr read)))
 (allow apse_app_t home_root_t (dir (getattr open read search)))
 (allow apse_app_t user_home_dir_t (dir (getattr open search read)))
 (allow apse_app_t user_home_t (dir (create getattr open search read write add_name remove_name)))
