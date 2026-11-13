@@ -277,7 +277,16 @@ print("WD=" + wd)
 print("XDG=" + xdg)
 p = os.path.join(xdg, wd)
 print("FILE=" + ("SOCK" if stat.S_ISSOCK(os.lstat(p).st_mode) else "NO"))
-print("RUNDIR_SOCKETS=" + "|".join(sorted(os.listdir(os.path.dirname(p)))))
+# Only sockets and directories — the per-instance runtime dir
+# also holds regular files (the pdeathsig shim source and
+# library), which are not security-relevant to this check.
+d = os.path.dirname(p)
+entries = sorted(
+    e for e in os.listdir(d)
+    if stat.S_ISSOCK(os.lstat(os.path.join(d, e)).st_mode)
+    or os.path.isdir(os.path.join(d, e))
+)
+print("RUNDIR_SOCKETS=" + "|".join(entries))
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 try:
     s.connect(p)

@@ -337,6 +337,10 @@
 ; must be allowed to `listen` on its own sockets
 (allow apse_t apse_t (unix_stream_socket (accept bind connect connectto create getattr read write getopt setopt listen)))
 (allow apse_t apse_t (udp_socket (create getattr ioctl read write getopt setopt)))
+; sd-notify (systemd's service-readiness protocol) uses an
+; AF_UNIX SOCK_DGRAM socket per notification: the supervisor
+; creates one, connects it to $NOTIFY_SOCKET, and sends.
+(allow apse_t apse_t (unix_dgram_socket (bind connect create getattr read sendto write getopt setopt)))
 (allow apse_t apse_t (fifo_file (read write)))
 (allow apse_t apse_t (lnk_file (read)))
 (allow apse_t apse_t (fd (use)))
@@ -388,6 +392,10 @@
 ; classes are not in this kernel's base mlsconstrain list, so the
 ; category-narrowed subject (s0:cN) passes the level check here
 (allow apse_t unconfined_t (unix_stream_socket (connectto read write)))
+; sd-notify sends to the $NOTIFY_SOCKET datagram created by the
+; launcher (unconfined_t): the sendto is cross-type (the target
+; socket's context is the creator's, not apse_t's own)
+(allow apse_t unconfined_t (unix_dgram_socket (connect sendto)))
 (allow apse_t unconfined_t (dbus (send_msg)))
 ; S supervises the app: the courtesy TERM, the kill -0 liveness
 ; probe (terminate_app) and the SIGKILL escalation
@@ -754,7 +762,7 @@
 ; context, LESSONS #42) stage their temp files in the host's `/tmp`.
 (allow apse_app_t tmp_t (dir (getattr open read search write add_name remove_name)))
 (allow apse_app_t tmp_t (file (append create getattr map open read write unlink)))
-(allow apse_app_t tmpfs_t (dir (getattr open search read)))
+(allow apse_app_t tmpfs_t (dir (add_name getattr open search read write)))
 (allow apse_app_t tmpfs_t (file (append create getattr map open read write unlink)))
 (allow apse_app_t session_dbusd_tmp_t (sock_file (getattr open read write)))
 (allow apse_app_t unconfined_dbusd_t (unix_stream_socket (accept connectto getattr read write getopt setopt)))
@@ -763,6 +771,22 @@
 (allow unconfined_dbusd_t apse_app_t (dbus (send_msg)))
 (allow apse_app_t unconfined_t (dbus (send_msg)))
 (allow apse_app_t node_t (node (recvfrom sendto tcp_recv tcp_send udp_recv udp_send)))
+; the implicit local-addr bind during connect(2) triggers a
+; node_bind check on the source address (non-fatal but noisy)
+(allow apse_app_t node_t (tcp_socket (node_bind)))
+; the app's tcp connect to host listeners on ephemeral ports
+; (the shared-netns sandbox inherits the host's loopback, and a
+; test-side or service-side listener is always on an ephemeral port)
+(allow apse_app_t ephemeral_port_t (tcp_socket (name_connect)))
+; /run/systemd: python3 probes it during startup to detect the
+; systemd session; the sandbox's fresh /run tmpfs carries it
+(allow apse_app_t init_var_run_t (dir (getattr search)))
+; /run/systemd/resolve: python3's startup probes it for
+; systemd-resolved detection (the search is non-fatal but noisy)
+(allow apse_app_t systemd_resolved_var_run_t (dir (getattr search)))
+; /run/systemd/resolve/stub-resolv.conf: python3's resolver
+; reads it for the DNS config (the file is net_conf_t)
+(allow apse_app_t net_conf_t (file (getattr open read)))
 ; the app's own unix sockets (socketpairs, local listeners):
 ; same socket-class self-permissions as its tcp/udp rule set
 (allow apse_app_t apse_app_t (unix_stream_socket (accept bind connect connectto create getattr read write getopt setopt listen)))
@@ -782,7 +806,7 @@
 ; plumbing) carry the app's own type; FIONBIO on one is a plain
 ; `ioctl` (0x542a), as bash and friends do on any pipe.
 (allow apse_app_t apse_app_t (fifo_file (getattr ioctl read write)))
-(allow apse_app_t apse_app_t (tcp_socket (create getattr name_bind connect read write getopt setopt)))
+(allow apse_app_t apse_app_t (tcp_socket (bind create getattr name_bind connect read write getopt setopt)))
 (allow apse_app_t apse_app_t (udp_socket (create getattr name_bind connect read write getopt setopt)))
 ; the standard /dev nodes the build binds in (the bind keeps their
 ; genfs labels — `null_device_t` covers both /dev/null and
