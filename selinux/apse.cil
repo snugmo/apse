@@ -1071,12 +1071,15 @@
 ; knobs); the app's runtimes probe it at init
 (allow apse_app_t sysctl_crypto_t (dir (getattr search)))
 (allow apse_app_t sysctl_crypto_t (file (getattr open read)))
-; /etc/pki and /etc/ssl (`cert_t`, via the `cert_type` attribute
-; which also covers the per-service cert types): OpenSSL's CA
-; trust tree — libcrypto probes it at init; read-only, the app
-; never writes trust data
-(allow apse_app_t cert_type (dir (getattr open read search)))
-(allow apse_app_t cert_type (file (getattr open read)))
+; the system's cert stores: /etc/pki and /etc/ssl (`cert_t`), plus
+; the per-service stores the `cert_type` attribute covers — apps
+; read public keys / trust data from any of them. The grant profile
+; mimics the base sets' read-only attribute grants (the
+; `lnk_file` rule covers the hashed symlink tree under
+; /etc/ssl/certs); the app never writes trust data
+(allow apse_app_t cert_type (dir (getattr ioctl lock open read search)))
+(allow apse_app_t cert_type (file (getattr ioctl lock open read)))
+(allow apse_app_t cert_type (lnk_file (getattr read)))
 ; VFS superblock objects are stat'd during path lookup on some
 ; mount types (`filesystem getattr`)
 (allow apse_app_t fs_t (filesystem (getattr)))
