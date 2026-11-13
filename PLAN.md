@@ -10,8 +10,10 @@ the audit `denied` baseline is flat.
 
 Open: **6.4** (the varlink tier) — parked until a released systemd ships
 `PIDs` in scope contexts (re-checked 2026-11-04: v263 still in
-development; Fedora 45's 262.1 has no user-bus varlink socket). Deferred
-denial classes (user's call, accepted — not sandbox use cases): fish's
+development; Fedora 45's 262.1 has no user-bus varlink socket); and
+**8.6** (a per-invocation `--no-selinux` flag) — the root-only,
+persistent file-relabel escape as a CLI knob. Deferred denial
+classes (user's call, accepted — not sandbox use cases): fish's
 completion *executing* the enumerated admin tools, the `find /` class,
 the metadata sweeps (`getfattr -R`; the python3 man readlink sweep).
 
@@ -1178,6 +1180,45 @@ audited as a write).
       label refinement for in-drag flow is closed too (v2.19 — the
       relay tracks the active drag source, so in-drag serves are
       labeled `selection=drag`).
+- [ ] 8.6 *(future)* Per-invocation `--no-selinux` flag (env
+      `APSE_NO_SELINUX`): run one invocation unconfined while the
+      binary stays confined by default. The current escape is the
+      binary's *file label* (`semodule -r` / `chcon` back to stock,
+      `selinux/README.md`) — root-only and persistent; this is the
+      unprivileged per-invocation form. Scope: the `run` pipeline
+      first; the satellites are separate processes the user starts
+      anyway and can take the flag later.
+      **Mechanism — a one-time self re-exec, not flag checks.**
+      `apse_t` is a property of the *file*: the S/A/B forks inherit
+      it regardless of any in-process flag, and B's exec of the app
+      still fires the module's `apse_t → apse_app_t` typetransition —
+      so merely skipping the MCS/shim checks does not un-confine the
+      *app*. With the flag set and `is_confined()`, `main` writes the
+      pre-module exec context (the binary's stock label —
+      `unconfined_t` per the module README; pin the exact context in
+      verify) to `/proc/self/attr/exec` and re-execs
+      `/proc/self/exe` with the original argv (flag included) —
+      reusing the MCS self-narrowing re-exec's one-time shape and
+      loop guard (the second entry sees `is_confined() == false` and
+      proceeds; the LESSONS #30/#31 NUL / no-`O_CREAT` traps apply to
+      that write too). From there the whole pipeline *is* unconfined
+      mode: no MCS, no shim, no exec-context writes, the app keeps
+      its own file label — exactly as if the binary had never been
+      relabeled.
+      **Module side:** the `apse_t` self-exec to the stock type
+      needs an explicit `type_transition apse_t apse_exec_t
+      process <stock-type>` plus the `process:transition` allow —
+      the MCS narrowing proves the exec-context write path; the new
+      part is a *type* change. Add the rule and confirm with the
+      tuning loop (zero new denials).
+      **Verify** (target machine, confined binary, enforcing):
+      (a) `run --no-selinux <probe>` — an in-sandbox
+      `/proc/self/attr/current` probe shows the stock context, the
+      app runs in its own type (not `apse_app_t`), zero denials;
+      (b) the same invocation without the flag stays confined
+      (regression guard); (c) the re-exec fires exactly once.
+      CI is unaffected — the test-suite binary is unrelabeled, so
+      the flag is a no-op there.
 
 ## 8. Risks / things to watch
 
