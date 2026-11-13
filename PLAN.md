@@ -1315,11 +1315,18 @@ audited as a write).
       not `file_type`** (user's refinement, verified): `exec_type`
       is the attribute the base policy attaches to executable-file
       types, whereas `file_type` is the generic type for
-      *everything* file-like — the attribute keeps the
-      `open` / `read` / `getattr` / `execute` / `execute_no_trans`
-      set on executables only. (a) *Child level:* `allow
-      apse_app_t exec_type (file (open read getattr execute
-      execute_no_trans))` — **no `noatsecure`**: a setuid exec then
+      *everything* file-like — the attribute keeps the exec set on
+      executables only. That set must be the **full exec union**
+      `entrypoint` / `execute` / `execute_no_trans` / `getattr` /
+      `map` / `open` / `read` (plus `ioctl` at the child level,
+      for the `cp`-style probe in the `bin_t` rule): every
+      enumerated rule uses `entrypoint` + `map`, so a narrower
+      grant (the original `open` / `read` / `getattr` / `execute`
+      / `execute_no_trans` draft) subsumes **nothing** and the
+      rule count goes *up*, not down. (a) *Child level:* `allow
+      apse_app_t exec_type (file (entrypoint execute
+      execute_no_trans getattr map open read ioctl))` — **no
+      `noatsecure`**: a setuid exec then
       runs setuid-stripped (secure-exec), so `pkexec` / `su` gain
       nothing, and DAC remains the backstop (the app is the user's
       real uid — only files it can already read/exec are
@@ -1328,7 +1335,9 @@ audited as a write).
       envelope (landlock can only shrink across exec, the seccomp
       filter, the namespaces, the MCS category) — the grant widens
       *which* binaries load, not *what* the process can do.
-      (b) *App level:* `allow apse_t exec_type (…)` plus, as an
+      (b) *App level:* `allow apse_t exec_type (file (entrypoint
+      execute execute_no_trans getattr map open read))` (same
+      union, minus the child-only `ioctl`) plus, as an
       experiment, a **generic-type transition** (`type_transition
       apse_t exec_type process apse_app_t` — the attribute in the
       object slot; the target-slot form is proven, the object-slot
@@ -1364,7 +1373,46 @@ audited as a write).
       *not* resolve attribute membership in rule queries (a `-t`
       against an attribute-valued rule returns the raw rule for
       *any* type — `usr_t` included), so membership checks go
-      through AVCs or the runcon oracle, not sesearch.
+      through the runcon exec oracle or — better —
+      `seinfo -a exec_type -x`, which enumerates the attribute's
+      *compiled* member types straight from the loaded policy
+      (what the Rule count below is based on).
+      **Rule count (verified 2026-11-13, `seinfo -a exec_type -x`:
+      1048 compiled members):** the grant absorbs **eight**
+      existing allow rules for **two** new ones — *net −6 of the
+      module's 295* (~2%). The `apse_t` side loses
+      `xserver_exec_t` / `apse_exec_t` / `bin_t` /
+      `shell_exec_t` (module lines ~309/310/407/410); the
+      `apse_app_t` side loses `shell_exec_t` / `bin_t` / `usr_t`
+      plus the existing narrow `exec_type`-file `getattr` rule
+      (~669/896/911/929). All of those targets carry
+      `exec_type` — including `usr_t` (surprise: it *is* a member,
+      though it mostly labels data files) and `apse_exec_t` (the
+      module itself adds it, ~line 157). What *stays*: `lib_t` ×2
+      and `ld_so_t` ×2 (shared libraries and the dynamic linker
+      are *not* `exec_type` — the earlier runcon denial for
+      `ld-linux-x86-64.so.2` matches), `apse_shim_t` (the
+      LD_PRELOAD `.so`), the home-content rules
+      (`user_home_t` / `gconf_home_t` / `apse_state_t` — the
+      app's *own* files, never `exec_type`), and all
+      `dir` / `lnk_file` traversal rules (path lookup and
+      readlink — a different class; and `execve` through a
+      symlink checks the *target's* label, so
+      `exec_type:lnk_file` stays its own rule). The real gain is
+      structural, not arithmetic: today *every* dedicated-type
+      binary the user wants to run costs one more rule + rebuild
+      + retest (the `ip` / `hostname` class this task exists for —
+      neither type has a rule at all today), while the grant
+      covers all 1048 members at once and stays immune to distro
+      filecon relabels. One trade-off to weigh at implement time:
+      the `apse_t`-side grant widens the trusted supervisor's
+      exec surface from ~6 named types to all 1048 — the same
+      class as the current `bin_t` rule (no typetransition, so an
+      exec'd foreign binary *stays* `apse_t`), but if that
+      matters the minimal variant grants `exec_type` to
+      `apse_app_t` only (net −3, `apse_t` side untouched) — at
+      the cost of leaving `apse run -- <dedicated-type app>`
+      broken, which is the app-level half of this task.
       **Follow-on: the *functional* grants (the real per-tool
       tuning).** Once exec is no longer the gate, the next denial
       wave is what the tools *do*: `ip` needs the `netlink` socket
