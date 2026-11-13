@@ -86,7 +86,11 @@ the module uses them; otherwise the file is bare statements.
   `df` surface; see the tuning notes below). Its *self*-grants are
   the full base-policy `domain` set, mirrored explicitly (v2.25 —
   the tuning notes explain why the `domain` attribute itself is not
-  joined).
+  joined). A read-only grant on the base `non_auth_file_type`
+  attribute (v2.26) gives it the domain baseline file read set
+  across every non-auth file type — the dedicated /etc config types
+  included (the `????` fix) — while the /proc/sys content closure
+  stays intact (those types are not members of the attribute).
 - `apse_state_t` — the per-app state tree
   (`$XDG_STATE_HOME/apse/` — on Fedora `~/.local/state/apse/`), the
   home of decision #43. A dedicated type instead of the

@@ -1492,4 +1492,17 @@ write-up.
    too: it only works on types that label real ELF files — a type
    that mostly labels data files (like `usr_t` under
    `/usr/include`) can only be probed with the few executables it
-   does label, or with `seinfo`.*
+   does label, or with `seinfo`. *Supplement (2026-11-13,
+   user-corrected): the `-ds`/`-dt` flags do work for the
+   literal-matching direction — they are boolean flags (the Errno 2
+   came from passing the attribute as a *positional* argument, which
+   the CLI parses as a policy-file path), and combined with
+   `-s`/`-t`/`-A` they suppress expansion of the attribute named
+   there: `sesearch -ds -s domain -A -c filesystem` lists only rules
+   whose source slot literally says `domain`, so you see exactly
+   what broad attributes a domain actually *targets* (here:
+   `base_file_type` / `base_ro_file_type` plus named types — *not*
+   `non_auth_file_type`); `-dt` is the target-side mirror. That is
+   the right tool for "does X grant on attribute A as written";
+   for the reverse question ("does type T have attribute A?"),
+   `seinfo -a <attr> -x` above remains the oracle.*

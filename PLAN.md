@@ -2,11 +2,14 @@
 
 ## Status
 
-Current: **v2.25** (2026-11-12; enforcing, kernel 7.2.15). The SELinux
-module (`selinux/apse.cil`) is in its fifth tuning round: the app's
-**self**-grants are an explicit line-by-line mirror of the base `domain`
-self-grant set, plus one `map` grant (PROT_NONE mmaps). Zero denials;
-the audit `denied` baseline is flat.
+Current: **v2.26** (2026-11-13; enforcing, kernel 7.2.15). The SELinux
+module's app domain carries a read-only grant on the base
+`non_auth_file_type` attribute — the domain baseline file read set
+extended to every non-auth file type, so the dedicated /etc config
+types (`auditd_etc_t`, `avahi_conf_t`, …) stat/read cleanly instead of
+showing `????` in a confined `ls -l /etc`. The v2.24/2.25 /proc
+closure is preserved (the /proc/sys content types are not members of
+the attribute).
 
 Open: **6.4** (the varlink tier) — parked until a released systemd ships
 `PIDs` in scope contexts (re-checked 2026-11-04: v263 still in
@@ -31,6 +34,62 @@ completion *executing* the enumerated admin tools, the `find /` class,
 the metadata sweeps (`getfattr -R`; the python3 man readlink sweep).
 
 ### Change log (newest first)
+
+- **v2.26** (2026-11-13; enforcing): the `????` fix — a read-only
+  grant on `non_auth_file_type` for the app domain. A confined
+  `ls -l /etc` showed `d??????????` / `l??????????` for ~42 entries:
+  their inodes carry the base policy's *dedicated* config types
+  (`auditd_etc_t`, `avahi_conf_t`, `bluetooth_conf_t`,
+  `cupsd_etc_t`, `dbusd_etc_t`, `dhcp_etc_t`, `dnsmasq_etc_t`,
+  `exports_t`, `firewalld_etc_rw_t`, `ipsec_key_file_t`,
+  `kmscon_conf_t`, `lvm_etc_t`, `mcelog_etc_t`, `modules_conf_t`,
+  `named_conf_t`, `net_conf_t`, `NetworkManager_etc_t`,
+  `openvpn_etc_t`, `pppd_etc_t`, `samba_etc_t`, `sssd_conf_t`,
+  `syslog_conf_t`, `system_cron_spool_t`, `tuned_etc_t`, …) — not
+  `etc_t` — and none had a rule, so `stat(2)` on each was denied
+  (listing itself worked: the /etc dir is `etc_t`). The grant is
+  the union of the base `domain` read set — `domain:base_file_type
+  dir { getattr open search }` + `lnk_file { getattr read }`,
+  `domain:base_ro_file_type dir { ioctl lock read }` + `file
+  { getattr ioctl lock open read }` — but targeted at
+  `non_auth_file_type` instead of the two base_* sets: the dedicated
+  config types are members of *neither* (23 / 11 members, the big
+  filesystem types), so the domain rules as written would have fixed
+  none of the 42, and enumerating the ~28 types is the same
+  distro-relabel fragility the exec world has (task 8.8).
+  `non_auth_file_type` = every file type except the auth files
+  (3213 members; strictly contains all 23 of `base_file_type`);
+  precedent: `hypervvssd_t`'s broad read. Preserved closures,
+  verified by a per-type delta over the loaded avtab (`seinfo`
+  membership × `sesearch --allow -s apse_app_t`, the four attribute
+  targets resolved to their members): `sysctl_kernel_t` /
+  `sysctl_net_t` / `sysctl_vm_t` (the /proc/sys *content* types —
+  the v2.24/2.25 closure) and `proc_net_t` are **not** members; the
+  only /proc-side members are `proc_t` (already fully granted),
+  `proc_xen_t` (Xen-only) and `system_map_t` (public symbol maps);
+  `tmpfs_t` / `sysfs_t` / `unlabeled_t` are members but already carry
+  equal-or-broader grants. New practical surface: the distro long
+  tail (config/log/var/spool types — incl. `ipsec_key_file_t`, which
+  `user_t` and every `svirt_sandbox_domain` / `container_domain` read
+  on the host, i.e. at the sandbox baseline) and the `exec_type`
+  members, already `file_type:file map`-able by the app anyway (mmap
+  implies read). Read-only by construction: no `write` / `create` /
+  `add_name` / `remove_name` / `setattr` / `execute*`. `apse_t` gets
+  no such grant (it has none on any /etc type — the supervisor does
+  no broad /etc reads; denial-driven). Verification tool: the
+  `sesearch -ds` / `-dt` flag pair (match as written, no attribute
+  expansion) shows `domain`'s literal filesystem targets are exactly
+  `base_file_type` / `base_ro_file_type` plus named types — it does
+  *not* target `non_auth_file_type` (LESSONS supplement to #56).
+  Verified in enforcing mode: the `????` count went **42 → 4** — the
+  four remaining are the auth files (`/etc/shadow`, `/etc/gshadow`
+  and the `-` backups; all `shadow_t`), which `non_auth_file_type`
+  excludes by definition — and the base `domain` attribute carries
+  no stat grant on `shadow_t` either (only the off-gated
+  `file_type:map`), so a confined app cannot stat them, exactly
+  like any ordinary confined user domain (their denials are
+  `dontaudit`'d in base — no audit spam, unchanged). No new
+  denials of any kind in the audit log over the run.
 
 - **v2.25** (2026-11-12; enforcing): fifth SELinux round — a *proactive*
   completeness pass (no user-reported denial). The app's **self**-grants
