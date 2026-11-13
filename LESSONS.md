@@ -1482,4 +1482,14 @@ write-up.
    `type_transition … exec_type process …` — remains the open
    question for task 8.8.) — *probe module `execprobe`, installed
    and removed the same hour; the runcon oracle is the reusable
-   technique.*
+   technique. Supplement (2026-11-13): for pure membership
+   questions ("does type X carry attribute A?"), neither oracle is
+   needed — `seinfo -a <attr> -x` lists the attribute's compiled
+   member types straight from the loaded policy (1048 members for
+   `exec_type`, including a module's own attribute additions);
+   runcon/AVC remain the oracles for how a rule *behaves* (e.g. the
+   object-slot transition). The runcon oracle has a subtler trap
+   too: it only works on types that label real ELF files — a type
+   that mostly labels data files (like `usr_t` under
+   `/usr/include`) can only be probed with the few executables it
+   does label, or with `seinfo`.*
