@@ -312,15 +312,15 @@
 ; keyword); the four-field form is the process transition
 (typetransition apse_t gconf_home_t dir "apse" apse_state_t)
 ; task 8.10: the per-instance /etc files. A generates
-; `hosts`/`hostname` into the scratch's `etc` dir — a `tmp_t`
-; chain (the no-rule default is the parent's own type, so every
-; scratch subdir stays `tmp_t`) — and step 7.5 binds them over
-; the self-bind /etc. Same five-field named filetrans as the
-; `apse` dir above: the inodes are born `apse_etc_t`, so the
-; 0644 chmod by A, the read by the app, and the unlink at
-; teardown all check against this type, never `tmp_t`
-(typetransition apse_t tmp_t file "hosts" apse_etc_t)
-(typetransition apse_t tmp_t file "hostname" apse_etc_t)
+; `hosts`/`hostname` in the per-instance runtime dir (a
+; `user_tmp_t` tree under $XDG_RUNTIME_DIR/apse) and step 7.5
+; binds them over the self-bind /etc. Same five-field named
+; filetrans as the `apse` dir above: the inodes are born
+; `apse_etc_t`, so the 0644 chmod by A, the read by the app,
+; and the unlink at teardown all check against this type,
+; never `user_tmp_t`
+(typetransition apse_t user_tmp_t file "hosts" apse_etc_t)
+(typetransition apse_t user_tmp_t file "hostname" apse_etc_t)
 (allow apse_app_t bin_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t shell_exec_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t user_home_t (process (noatsecure rlimitinh siginh)))
@@ -369,10 +369,11 @@
 ; (hooks.c, `selinux_inode_create`) determines the new label with
 ; the `typetransition` above and then checks that *that* SID
 ; (`apse_etc_t`) can be associated with the containing
-; superblock's SID (fs_t for the root fs that hosts `/var/tmp`,
-; tmpfs_t when it is a tmpfs — same pair the `apse_state_t`
-; block grants below). Without it the O_CREAT open fails
-; EACCES even though every file-permission check passes
+; superblock's SID (tmpfs_t for the $XDG_RUNTIME_DIR /run
+; tmpfs; fs_t is kept for the off-default case where the
+; runtime dir sits on a non-tmpfs filesystem). Without it the
+; O_CREAT open fails EACCES even though every file-permission
+; check passes
 (allow apse_etc_t fs_t (filesystem (associate)))
 (allow apse_etc_t tmpfs_t (filesystem (associate)))
 ; `--listen /tmp/foo.sock`: a plain tmp socket. `setattr` is the

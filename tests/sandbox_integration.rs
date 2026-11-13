@@ -23,11 +23,16 @@
 //!   listener is reachable through loopback); `--network=none`
 //!   denies `bind`/`connect` (even on loopback) and its netns
 //!   holds only loopback;
+//! * **the per-instance `/etc` (task 8.10)** — the generated
+//!   `hosts`/`hostname` (bound over the self-bind `/etc`) carry the
+//!   sandbox's own name: `/etc/hostname` matches the UTS hostname,
+//!   the name resolves to loopback from the generated `hosts` line,
+//!   and the files are read-only;
 //! * **the tagged Wayland socket** — the app sees only the tagged
-//!   socket (`WAYLAND_DISPLAY` points at it, it is the only socket
-//!   in the instance dir) and connects through it; after the run
-//!   the socket is no longer served. Skipped without a running
-//!   wlroots compositor;
+//!   socket (`WAYLAND_DISPLAY` points at it; the only other entry
+//!   in the instance dir is the `etc` dir, task 8.10) and
+//!   connects through it; after the run the socket is no longer
+//!   served. Skipped without a running wlroots compositor;
 //! * **lifecycle** — `READY=1` sd-notify when the app is up;
 //!   SIGTERM forwarded to a handling app (clean exit 0), and
 //!   escalated to SIGKILL two seconds later for one that ignores
@@ -229,6 +234,38 @@ for tag, addr in [("BIND", ("127.0.0.1", 0)),
     finally:
         s.close()
 print("IFACES=" + "|".join(sorted(l.split(":")[0].strip() for l in open("/proc/net/dev").readlines()[2:] if l.strip())))
+"#;
+
+/// The probe: the per-instance /etc (task 8.10). The generated
+/// `hosts`/`hostname` are bound over the self-bind /etc; the
+/// sandbox's own name must resolve to loopback from them, and an
+/// open for write must be denied (the Landlock file grants are
+/// `Read`; in confined mode `apse_etc_t` is read-only).
+const ETC: &str = r#"
+import os, socket
+h = socket.gethostname()
+print("UTS=" + h)
+print("ETC=" + open("/etc/hostname").read().strip())
+try:
+    addrs = socket.gethostbyname_ex(h)[2]
+except Exception as e:
+    addrs = ["ERR:%s" % e.__class__.__name__]
+print("BYNAME_EX=" + ",".join(addrs))
+try:
+    lines = open("/etc/hosts").read().splitlines()
+    ok = sum(
+        1
+        for l in lines
+        if l.split() and l.split()[0] == "127.0.0.1" and h in l.split()
+    )
+    print("HOSTS_LINE_OK=%d" % ok)
+except Exception as e:
+    print("HOSTS_LINE_OK=ERR:%s" % e.__class__.__name__)
+try:
+    os.close(os.open("/etc/hosts", os.O_WRONLY))
+    print("WRITE=OK")
+except OSError as e:
+    print("WRITE=ERR:%d" % e.errno)
 "#;
 
 /// The probe: the tagged Wayland socket.
@@ -681,6 +718,54 @@ fn network_none_denies_all_communication() {
 }
 
 #[test]
+fn etc_files_are_per_instance_and_readonly() {
+    // Both network modes: the generated files are static for the
+    // instance, so resolution holds with and without a netns
+    // (task 8.10).
+    for (inst, args) in [
+        ("it-etc", &[] as &[&str]),
+        ("it-etc-none", &["--network=none"]),
+    ] {
+        let run = expect_ok(
+            run_probe(inst, args, &[], ETC),
+            "the per-instance /etc probe",
+        );
+        let name = format!("apse-{APP}-{inst}");
+        assert_eq!(
+            kv(&run.out, "UTS"),
+            Some(name.as_str()),
+            "the UTS hostname is not the per-instance name:\n{}",
+            run.out
+        );
+        assert_eq!(
+            kv(&run.out, "ETC"),
+            Some(name.as_str()),
+            "/etc/hostname does not match the UTS hostname:\n{}",
+            run.out
+        );
+        assert_eq!(
+            kv(&run.out, "HOSTS_LINE_OK"),
+            Some("1"),
+            "the generated /etc/hosts has no 127.0.0.1 line for the instance name:\n{}",
+            run.out
+        );
+        let addrs = kv(&run.out, "BYNAME_EX").unwrap_or_default();
+        assert!(
+            addrs.contains("127.0.0.1") && addrs.split(',').all(|a| a.starts_with("127.0.")),
+            "the sandbox's own name must resolve to loopback only: {addrs}\n{}",
+            run.out
+        );
+        assert_eq!(
+            kv(&run.out, "WRITE"),
+            Some("ERR:13"),
+            "the generated /etc/hosts must be read-only in the sandbox:\n{}",
+            run.out
+        );
+        clean_instance(inst);
+    }
+}
+
+#[test]
 fn wayland_tagged_socket_is_the_only_socket() {
     let wd = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
     if wd.is_empty() {
@@ -723,10 +808,13 @@ fn wayland_tagged_socket_is_the_only_socket() {
         "the tagged socket file is not a unix socket:\n{}",
         run.out
     );
+    // The instance dir holds exactly the tagged socket and the
+    // `etc` dir (task 8.10's per-instance /etc sources, bound into
+    // the sandbox's /run with the instance dir).
     assert_eq!(
         kv(&run.out, "RUNDIR_SOCKETS"),
-        Some("wl-it"),
-        "the app sees more than the tagged socket (the host's sockets must be invisible):\n{}",
+        Some("etc|wl-it"),
+        "the app sees more than the tagged socket and the etc dir (the host's sockets must be invisible):\n{}",
         run.out
     );
     assert_eq!(

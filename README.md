@@ -147,9 +147,11 @@ volumes" is gone). Working as the mount namespace's root, `A` assembles:
    PCI/DRM discovery.
 4. `/run` — a fresh tmpfs carrying **only** the per-instance dir
    (`/run/user/<uid>/apse/<app>-<instance>`), whose contents arrive from
-   a build scratch on `/var/tmp`. The host's own Wayland sockets sit
-   directly under `$XDG_RUNTIME_DIR` and are deliberately *invisible*
-   here — the app can reach only the tagged socket.
+   a build scratch on `/var/tmp`: the tagged Wayland socket and the
+   per-instance `etc/` dir (the sources of the `/etc` files, item 7
+   below). The host's own Wayland sockets sit directly under
+   `$XDG_RUNTIME_DIR` and are deliberately *invisible* here — the app
+   can reach only the tagged socket.
 5. `/tmp` — a fresh tmpfs, sized by the profile (`tmp_size_mib`).
 6. The app's **home and XDG dirs** (decision #43): by default a
    **private per-app state tree** under
@@ -161,7 +163,18 @@ volumes" is gone). Working as the mount namespace's root, `A` assembles:
    (`$HOME`, `$XDG_CONFIG_HOME`, `$XDG_CACHE_HOME`, `$XDG_STATE_HOME`,
    `$XDG_DATA_HOME`) is rw self-bound instead. The profile's
    `rw_binds` layer on top in both modes.
-7. **Masks** — empty tmpfs over `/root`, `/boot`, `/var`, `/srv`,
+7. **Per-instance `/etc` files** (task 8.10): `hosts` and `hostname`
+   are generated into the per-instance runtime dir
+   (`$XDG_RUNTIME_DIR/apse/<app>-<instance>/etc/`) and bound over the
+   self-bind-layer `/etc`, so the sandbox's own UTS name
+   (`apse-<app>-<inst>`) resolves on loopback from `files`
+   (`127.0.0.1`) — no DNS fallback for a nonexistent name, no lookup
+   timeouts for apps that resolve their own hostname. Static for the
+   instance's lifetime: an in-sandbox `hostname <new>` changes the UTS
+   name without touching these files (a known limitation), and they are
+   read-only for the app (the Landlock file grants are `Read` only; in
+   confined mode `apse_etc_t` is read-only).
+8. **Masks** — empty tmpfs over `/root`, `/boot`, `/var`, `/srv`,
    `/media`, `/mnt`, every other user's `/home/*`, and `/opt/*` except the
    app's own dir, plus the profile's `mask`.
 

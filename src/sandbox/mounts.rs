@@ -437,18 +437,19 @@ fn in_render_group() -> bool {
 }
 
 /// The generated `/etc/hosts` (task 8.10): podman's localhost
-/// definitions (v4 and v6) plus the instance name on `127.0.1.1`
-/// (the systemd-resolved convention for the hostname) and `::1`.
-/// The host's own file is *not* copied: its user entries are
-/// neither needed nor wanted in the sandbox — the instance
-/// resolves on loopback, and everything else goes to DNS exactly
-/// as the host sees it (the host's `resolv.conf` stays).
+/// definitions (v4 and v6) plus the instance name on `127.0.0.1` —
+/// the loopback users have learnt to expect (and what systemd's
+/// nss-myhostname answers for the hostname), rather than the
+/// stock file's `127.0.1.1` per-host alias. The host's own file is
+/// *not* copied: its user entries are neither needed nor wanted in
+/// the sandbox — the instance resolves on loopback, and everything
+/// else goes to DNS exactly as the host sees it (the host's
+/// `resolv.conf` stays).
 pub(crate) fn etc_hosts_content(hostname: &str) -> String {
     format!(
         "127.0.0.1\tlocalhost localhost.localdomain localhost4 localhost4.localdomain4\n\
          ::1\tlocalhost localhost.localdomain localhost6 localhost6.localdomain6\n\
-         127.0.1.1\t{hostname} {hostname}.localhost\n\
-         ::1\t{hostname}\n"
+         127.0.0.1\t{hostname} {hostname}.localhost\n"
     )
 }
 
@@ -458,9 +459,9 @@ pub(crate) fn etc_hosts_content(hostname: &str) -> String {
 /// instance name, so `gethostbyname(gethostname())` would fall
 /// through to DNS with a nonexistent name — a real timeout in a
 /// shared netns, and a known misbehaviour trigger for apps that
-/// probe their own name. `hosts` and `hostname` are generated
-/// here (step 1, where the scratch is created) and step 7.5
-/// binds them over the self-bind-layer `/etc`.
+/// probe their own name. `hosts` and `hostname` are generated in
+/// the per-instance runtime dir (step 1) and step 7.5 binds them
+/// over the self-bind-layer `/etc`.
 ///
 /// The files are **static for the instance's lifetime**: written
 /// once, never refreshed (an in-sandbox `hostname <new>` changes
@@ -471,8 +472,9 @@ pub(crate) fn etc_hosts_content(hostname: &str) -> String {
 /// guarantee is the two floors, both of which grant no write
 /// (the Landlock file grants are `Read`; in confined mode the
 /// module's `apse_etc_t` rule is read-only).
-fn write_etc_files(scratch: &str, hostname: &str) -> Result<()> {
-    let etc = format!("{scratch}/etc");
+fn write_etc_files(base: &str, hostname: &str) -> Result<()> {
+    let etc = format!("{base}/etc");
+    std::fs::create_dir_all(&etc).with_context(|| format!("creating {etc}"))?;
     std::fs::write(format!("{etc}/hosts"), etc_hosts_content(hostname))
         .with_context(|| format!("writing {etc}/hosts"))?;
     std::fs::write(format!("{etc}/hostname"), format!("{hostname}\n"))
@@ -513,7 +515,6 @@ pub(crate) fn build_rootfs(cfg: &SandboxConfig) -> Result<()> {
         format!("{scratch}/sys/class"),
         format!("{scratch}/runtime"),
         format!("{scratch}/state"),
-        format!("{scratch}/etc"),
     ] {
         std::fs::create_dir_all(&d).with_context(|| format!("creating the scratch dir {d}"))?;
     }
@@ -522,14 +523,6 @@ pub(crate) fn build_rootfs(cfg: &SandboxConfig) -> Result<()> {
     // socket).
     std::fs::set_permissions(&scratch, std::fs::Permissions::from_mode(0o700))
         .with_context(|| format!("setting the mode of {scratch}"))?;
-    // The per-instance /etc files (task 8.10), generated here
-    // (constants — the host's /etc is not read, so the ordering
-    // against the self-bind is a matter of keeping the scratch
-    // work together, not of visibility): the sources of the
-    // step-7.5 binds.
-    let hostname = namespaces::hostname_for(&cfg.app_id, &cfg.instance_id);
-    write_etc_files(&scratch, &hostname)
-        .context("generating the per-instance /etc files")?;
     for n in DEV_NODES {
         let src = format!("/dev/{n}");
         if !Path::new(&src).exists() {
@@ -567,6 +560,18 @@ pub(crate) fn build_rootfs(cfg: &SandboxConfig) -> Result<()> {
         libc::MS_BIND,
         "",
     )?;
+    // The per-instance /etc files (task 8.10): generated in the
+    // runtime dir (the carry's source — a plain bind shares the
+    // dentry tree, so the files are visible through
+    // `scratch/runtime` whichever side they are written on) and
+    // the step-5 bind carries them into the sandbox's
+    // `/run/user/<uid>/apse/<inst>/etc/`. They must be written
+    // on the host side: at this point in A's mount namespace
+    // `/run` is still the host's tmpfs (the fresh one is
+    // mounted in step 5), so the `host_runtime` path resolves to
+    // the real per-instance dir.
+    let hostname = namespaces::hostname_for(&cfg.app_id, &cfg.instance_id);
+    write_etc_files(&host_runtime, &hostname).context("generating the per-instance /etc files")?;
     // The per-app state tree (decision #43), carried the same way:
     // its host path sits under the real home (the default
     // `XDG_STATE_HOME` is `$HOME/.local/state`), which step 7
@@ -745,19 +750,20 @@ pub(crate) fn build_rootfs(cfg: &SandboxConfig) -> Result<()> {
     }
 
     // 7.5) The per-instance /etc files (task 8.10): the generated
-    // `hosts`/`hostname` (written to the scratch in step 1) are
-    // bound over the self-bind-layer /etc — strictly **before**
-    // the step-8 /var mask, because their sources live on /var/tmp
-    // and become unresolvable after it (the same trap the runtime
-    // dir carry works around, decision #28). Plain single-file
-    // MS_BINDs, exactly like the step-1 dev-node binds; the
-    // targets exist on the host's /etc (a missing one is a hard
-    // error — the user-owned build cannot create files in the
-    // root-owned /etc). The inodes are the scratch's: a
-    // single-file bind is not *beneath* /etc in the dentry tree,
-    // so the /etc grants do not reach them — the app's access is
-    // mediated by the file-level Landlock grants (policy.rs) and,
-    // in confined mode, the module's `apse_etc_t` rule (selinux/).
+    // `hosts`/`hostname` (written to the runtime dir in step 1,
+    // which step 5 bound into the fresh /run) are bound over the
+    // self-bind-layer /etc. The sources are on the fresh /run
+    // tmpfs (not on /var/tmp), so this step has no ordering
+    // constraint relative to the step-8 /var mask. Plain
+    // single-file MS_BINDs; the targets exist on the host's /etc
+    // (a missing one is a hard error — the user-owned build
+    // cannot create files in the root-owned /etc). The inodes are
+    // the runtime dir's: a single-file bind is not *beneath* /etc
+    // in the dentry tree, so the /etc grants do not reach them —
+    // the app's access is mediated by the file-level Landlock
+    // grants (policy.rs) and, in confined mode, the module's
+    // `apse_etc_t` rule (selinux/).
+    let inst_dir = format!("/run/user/{uid}/apse/{inst_name}");
     for f in ["hosts", "hostname"] {
         let tgt = format!("/etc/{f}");
         if !Path::new(&tgt).exists() {
@@ -766,8 +772,14 @@ pub(crate) fn build_rootfs(cfg: &SandboxConfig) -> Result<()> {
                  needs a target to cover (create it on the host)"
             );
         }
-        mount(&format!("{scratch}/etc/{f}"), &tgt, "none", libc::MS_BIND, "")
-            .with_context(|| format!("binding {tgt}"))?;
+        mount(
+            &format!("{inst_dir}/etc/{f}"),
+            &tgt,
+            "none",
+            libc::MS_BIND,
+            "",
+        )
+        .with_context(|| format!("binding {tgt}"))?;
     }
 
     // 8) Masks: empty tmpfs over the paths the app must not see

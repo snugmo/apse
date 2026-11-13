@@ -1563,3 +1563,40 @@ write-up.
    (2026-11-13, kernel 7.2.15-300.fc45, enforcing): the A/B
    behind the broad-grant drop; the open detail is
    vanilla-vs-Fedora wiring of the 7.2 `mmap_file` hook.*
+72. **A plain `bind(2)` shares the dentry tree — writes on either side
+   are visible through the other; "the bind hides the target" only
+   holds when the target is *replaced* (a fresh tmpfs/mounted on top
+   of the directory).** The task 8.10 confusion (the per-instance
+   `/etc` files "landing on the wrong tree") was the write going into
+   a scratch subdir that had *never been bound* (a plain btrfs
+   directory), not a bind snapshotting content. The rule: a bind
+   mount is the same inodes under a second mount point — content
+   present at bind time is the same files through the target, and
+   files created later (from either side) appear in both. The
+   hide-semantics people expect belong to *mount-on-top* (step 5's
+   fresh `/run` tmpfs hides the host's `/run` tree; previously
+   carried content is only reachable through the scratch bind
+   path). — *v2.30 (2026-11-13, task 8.10: the `/etc` sources moved
+   from the /var/tmp scratch to
+   `$XDG_RUNTIME_DIR/apse/<inst>/etc/`).*
+73. **Two validation gotchas around the XDG runtime dir.** (a)
+   `tempfile::TempDir` creates its dir **0755**, but
+   `xdg::BaseDirectories::get_runtime_directory()` (the shared
+   construct `run_broker`/`run_decide` now use) enforces the XDG
+   spec's **0700** security check — a test that fakes
+   `$XDG_RUNTIME_DIR` must `chmod` the dir 0700 before spawning or
+   the daemon exits before binding anything (the broker
+   integration tests hit this after the dedup commit, and silently:
+   the harness nulls the child's stderr). (b) glibc's
+   `gethostbyname` for the *local* hostname consults the nss
+   `myhostname` module, which maps it to `127.0.0.1`/`::1`
+   independently of `/etc/hosts` — a `files` entry on a different
+   loopback address (the stock Fedora file's `127.0.1.1` per-host
+   alias) would show up only through `gethostbyname_ex`/
+   `getaddrinfo`, so the two APIs can disagree about *which*
+   loopback the name maps to. The 8.10 generated file deliberately
+   uses `127.0.0.1` for the instance name (the user's call —
+   users expect that address, and it is exactly what nss-myhostname
+   answers), so all three paths (plain `gethostbyname`,
+   `gethostbyname_ex`, `getaddrinfo`) agree. — *v2.30
+   (2026-11-13).*
