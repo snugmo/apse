@@ -131,7 +131,7 @@
 (typeattributeset cil_gen_require proc_kcore_t)
 (typeattributeset cil_gen_require proc_mdstat_t)
 (typeattributeset cil_gen_require system_map_t)
-(typeattributeset cil_gen_require cert_t)
+(typeattributeset cil_gen_require cert_type)
 (typeattributeset mcs_constrained_type (apse_t apse_app_t apse_shim_t))
 ; `apse_exec_t` is a standard application executable: it carries the
 ; same attribute set the base policy gives `ssh_exec_t` /
@@ -1071,11 +1071,12 @@
 ; knobs); the app's runtimes probe it at init
 (allow apse_app_t sysctl_crypto_t (dir (getattr search)))
 (allow apse_app_t sysctl_crypto_t (file (getattr open read)))
-; /etc/pki and /etc/ssl (all `cert_t`): OpenSSL's CA trust tree —
-; libcrypto probes it at init; read-only, the app never writes
-; trust data
-(allow apse_app_t cert_t (dir (getattr open read search)))
-(allow apse_app_t cert_t (file (getattr open read)))
+; /etc/pki and /etc/ssl (`cert_t`, via the `cert_type` attribute
+; which also covers the per-service cert types): OpenSSL's CA
+; trust tree — libcrypto probes it at init; read-only, the app
+; never writes trust data
+(allow apse_app_t cert_type (dir (getattr open read search)))
+(allow apse_app_t cert_type (file (getattr open read)))
 ; VFS superblock objects are stat'd during path lookup on some
 ; mount types (`filesystem getattr`)
 (allow apse_app_t fs_t (filesystem (getattr)))
