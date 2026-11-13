@@ -43,6 +43,23 @@ pub(crate) fn capability_set(config: &SandboxConfig, instance_dir: &Path) -> Res
             .allow_path(*p, AccessMode::Read)
             .with_context(|| format!("granting read access to {p}"))?;
     }
+    // The per-instance /etc files (task 8.10): `hosts`/`hostname`
+    // are generated in A and bound over the self-bind-layer /etc.
+    // Landlock matches **inodes**, and a single-file bind is not
+    // *beneath* `/etc` in the dentry tree, so the `/etc` directory
+    // grant above does not reach them — the rules must be on the
+    // file inodes (`allow_file`, not `allow_path`). The same pure
+    // function runs in S (where `/etc/hosts` is still the host's
+    // real file — redundant but consistent) and in B, after the
+    // build (where it is the scratch inode — the one the floor
+    // enforces). Read-only: the app must not be able to mutate its
+    // own identity (the confined-mode mirror is the module's
+    // read-only `apse_etc_t` rule).
+    for f in ["/etc/hosts", "/etc/hostname"] {
+        caps = caps
+            .allow_file(f, AccessMode::Read)
+            .with_context(|| format!("granting read access to {f}"))?;
+    }
     // The fresh /dev tmpfs holds only the nodes we bound (plus the
     // pts instance), so RW on it means exactly "the app's devices".
     caps = caps

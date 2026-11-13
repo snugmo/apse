@@ -51,6 +51,16 @@
 ; (`selinux_inode_getsecurity` only converts the inode's SID).
 (type apse_state_t)
 (roletype object_r apse_state_t)
+; task 8.10: the per-instance /etc files (`hosts`, `hostname`).
+; Generated into the scratch by A and bound over the self-bind
+; /etc, so the instance's own UTS name resolves on loopback: the
+; host's /etc/hosts is `net_conf_t` and knows nothing about
+; `apse-<app>-<inst>` (see the named filetrans below). Data, not
+; exec: no attribute joins — a module type joins none by default
+; (LESSONS #53), which is exactly what keeps every grant below
+; explicit.
+(type apse_etc_t)
+(roletype object_r apse_etc_t)
 (typeattributeset cil_gen_require file_type)
 (typeattributeset cil_gen_require exec_type)
 (typeattributeset cil_gen_require entry_type)
@@ -132,6 +142,9 @@
 (typeattributeset cil_gen_require proc_mdstat_t)
 (typeattributeset cil_gen_require system_map_t)
 (typeattributeset cil_gen_require cert_type)
+; task 8.10: the host /etc files the generated ones are bound over
+(typeattributeset cil_gen_require net_conf_t)
+(typeattributeset cil_gen_require hostname_etc_t)
 (typeattributeset mcs_constrained_type (apse_t apse_app_t apse_shim_t))
 ; `apse_exec_t` is a standard application executable: it carries the
 ; same attribute set the base policy gives `ssh_exec_t` /
@@ -219,6 +232,10 @@
 ; types hold those, so a stray unconfined process can at most see
 ; and delete the file, never load it.
 (allow unconfined_t apse_shim_t (file (getattr unlink)))
+; task 8.10: manual cleanup of a stale scratch (a run killed
+; hard enough to skip its own teardown leaves the generated /etc
+; files until the next run or a user `rm -rf`)
+(allow unconfined_t apse_etc_t (file (getattr unlink)))
 ; the user can signal the sandboxed app's host-visible process
 ; (signull: the kill -0 liveness probe, strace-style tools)
 (allow unconfined_t apse_app_t (process (getattr noatsecure rlimitinh siginh signal sigkill signull ptrace)))
@@ -294,6 +311,16 @@
 ; against libsepol 3.11's CIL reader, which has no `filetrans`
 ; keyword); the four-field form is the process transition
 (typetransition apse_t gconf_home_t dir "apse" apse_state_t)
+; task 8.10: the per-instance /etc files. A generates
+; `hosts`/`hostname` into the scratch's `etc` dir — a `tmp_t`
+; chain (the no-rule default is the parent's own type, so every
+; scratch subdir stays `tmp_t`) — and step 7.5 binds them over
+; the self-bind /etc. Same five-field named filetrans as the
+; `apse` dir above: the inodes are born `apse_etc_t`, so the
+; 0644 chmod by A, the read by the app, and the unlink at
+; teardown all check against this type, never `tmp_t`
+(typetransition apse_t tmp_t file "hosts" apse_etc_t)
+(typetransition apse_t tmp_t file "hostname" apse_etc_t)
 (allow apse_app_t bin_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t shell_exec_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t user_home_t (process (noatsecure rlimitinh siginh)))
@@ -332,6 +359,22 @@
 (allow apse_t file_type (dir (mounton)))
 (allow apse_t tmp_t (dir (create getattr open search read write add_name remove_name rmdir mounton setattr)))
 (allow apse_t tmp_t (file (append create getattr map open read write unlink mounton)))
+; task 8.10: A generates the per-instance /etc files (the
+; `create` of the O_CREAT open and the `write` of the O_WRONLY|
+; O_TRUNC one — truncation is checked as `write`, the kernel
+; has no `truncate` permission — plus the `setattr` of the 0644
+; chmod) and tears the scratch down at the end (`unlink`)
+(allow apse_t apse_etc_t (file (append create getattr open read setattr write unlink)))
+; and the creation's `filesystem:associate` check: `may_create`
+; (hooks.c, `selinux_inode_create`) determines the new label with
+; the `typetransition` above and then checks that *that* SID
+; (`apse_etc_t`) can be associated with the containing
+; superblock's SID (fs_t for the root fs that hosts `/var/tmp`,
+; tmpfs_t when it is a tmpfs — same pair the `apse_state_t`
+; block grants below). Without it the O_CREAT open fails
+; EACCES even though every file-permission check passes
+(allow apse_etc_t fs_t (filesystem (associate)))
+(allow apse_etc_t tmpfs_t (filesystem (associate)))
 ; `--listen /tmp/foo.sock`: a plain tmp socket. `setattr` is the
 ; chmod(0600) the SIGHUP in-place re-exec does when it re-binds a
 ; pre-existing socket (the re-exec re-runs `bind_listener`, which
@@ -399,6 +442,16 @@
 ; writes are possible anyway.
 (allow apse_t sysfs_t (dir (getattr search)))
 (allow apse_t etc_t (dir (getattr search)))
+; task 8.10: step 7.5 binds the generated files over the host's
+; /etc/hosts (`net_conf_t`) and /etc/hostname (`hostname_etc_t`):
+; the bind's only MAC check is FILE__MOUNTON on the target
+; inode (`selinux_mount` — the source's label is not part of it);
+; the step's existence guard additionally stats the target, which
+; is FILE__GETATTR on the host file's label (without it the
+; unconfined-mode `Path::exists()` passes and the confined one
+; gets EACCES, so the guard must see the file under both modes)
+(allow apse_t net_conf_t (file (getattr mounton)))
+(allow apse_t hostname_etc_t (file (getattr mounton)))
 (allow apse_t usr_t (dir (getattr open read search)))
 (allow apse_t bin_t (dir (getattr search)))
 ; `execute_no_trans`: the on-demand shim compile (decision #42) pins
@@ -942,6 +995,13 @@
 (allow apse_app_t base_ro_file_type (file (getattr ioctl lock open read)))
 (allow apse_app_t non_security_file_type (dir (getattr)))
 (allow apse_app_t non_security_file_type (lnk_file (getattr read)))
+; task 8.10: the per-instance /etc files — read-only (no
+; write/setattr: a write through /etc/hosts would land in the
+; scratch, but the app must not be able to mutate its own
+; identity; the Landlock floor is Read-only for the same
+; reason). The /etc dir itself is reachable through the
+; `base_file_type` `etc_t` traversal grant above
+(allow apse_app_t apse_etc_t (file (getattr open read)))
 (allow apse_app_t home_root_t (dir (getattr open read search)))
 (allow apse_app_t user_home_dir_t (dir (getattr open search read)))
 (allow apse_app_t user_home_t (dir (create getattr open search read write add_name remove_name)))
