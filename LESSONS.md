@@ -1458,3 +1458,28 @@ write-up.
    them unwritable. — *diagnosed 2026-11-13 (kernel 7.2.15, enforcing,
    v2.25): `id -Z` in a confined `apse run`; the strace / `stat -f` /
    empty-audit triangle closed the chain.*
+
+70. **SELinux attributes expand in `semodule -i` CIL mode, but this
+   `sesearch` cannot see that expansion — verify attribute
+   membership with a controlled exec or an AVC, never a sesearch
+   hit/miss.** (Fedora 45, policycoreutils 3.11; verified
+   2026-11-13, kernel 7.2.15, enforcing.) A probe module using the
+   base policy's `exec_type` *attribute* (an attribute, not a type)
+   in the *target* slot of an allow installs cleanly — `semodule
+   -i` compiles it, and an undefined identifier would have failed
+   the install — and the compiled policy's access vectors then
+   carry the full set of tagged types. A runcon exec oracle
+   confirmed the coverage: a probe process type exec'ing one
+   world-exec file per type → **141/141** of the `/usr/bin` +
+   `/usr/sbin` file types have `exec_type`, zero denials. The
+   trap: `sesearch --allow -t <type>` against an
+   attribute-valued rule returns the *raw* rule for *any* type
+   (even `usr_t`, a directory type) — so in this version a
+   sesearch hit or miss tells you nothing about membership; the
+   `-ds` / `-dt` "match attributes" flags take no argument and
+   treat the attribute name as a policy-file path (`Errno 2: No
+   such file or directory`). (The object-slot form —
+   `type_transition … exec_type process …` — remains the open
+   question for task 8.8.) — *probe module `execprobe`, installed
+   and removed the same hour; the runcon oracle is the reusable
+   technique.*
