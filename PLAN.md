@@ -20,7 +20,12 @@ instead of chasing 141 distribution exec labels; the per-tool work
 moves to functional grants (netlink, `sethostname`); **8.9** (drop
 the `home = "host"` profile mode, decision #44) — the private home
 is the only mode: the `home` field, its mode branches, and the
-14 host-mode module rules go. Deferred denial
+14 host-mode module rules go; **8.10** (per-instance `/etc`
+files) — `hosts` + `hostname` (and, under `--network=none`, a
+nameserver-less `resolv.conf`) generated into the scratch and
+bound over `/etc`, so the instance's UTS name resolves on
+loopback: no DNS fallback, no lookup timeouts for apps that
+resolve their own hostname. Deferred denial
 classes (user's call, accepted — not sandbox use cases): fish's
 completion *executing* the enumerated admin tools, the `find /` class,
 the metadata sweeps (`getfattr -R`; the python3 man readlink sweep).
@@ -1505,6 +1510,117 @@ audited as a write).
       both traversal families); (c) an unconfined run unchanged;
       (d) a `home = "host"` profile fails at parse with the
       unknown-field error.
+- [ ] 8.10 *(future)* Per-instance `/etc` files — the sandbox's
+      own name must resolve. The UTS hostname
+      `apse-<app>-<inst>` (`namespaces::hostname_for`, set by B
+      in `enter_utsns`) is absent from the app's `/etc/hosts`
+      (the host's, carried by the `/` self-bind), so
+      `gethostbyname(gethostname())` falls through to DNS with a
+      nonexistent name — under a shared netns that is a real
+      DNS timeout, and some apps (window managers: KWin has been
+      observed micro-stuttering on periodic lookups of its own
+      name; never seen under sway) misbehave on exactly that.
+      **The design** (generate in A, bind in a new build step,
+      label in the module): (1) *Generation, step 1* — where the
+      scratch is created, **before** the self-bind, so the
+      host's `/etc` is still readable: `scratch/etc/hosts` =
+      the host's `/etc/hosts` verbatim + `127.0.1.1 <name>
+      <name>.localhost` + `::1 <name>` (if the host file is
+      missing or unreadable, fall back to a minimal
+      `127.0.0.1 localhost` + the name lines — never fail the
+      build for this); `scratch/etc/hostname` = `<name>\n` (it
+      and B's UTS set match by construction); and
+      `scratch/etc/resolv.conf` **only under
+      `--network=none`** = the host's file with the
+      `nameserver` lines stripped — zero servers makes glibc
+      skip DNS outright (immediate failure, no timeout) while
+      `files` still resolves the instance name; in shared
+      netns the host's `resolv.conf` stays (binding it would
+      just mirror the host). The files are **static for the
+      instance's lifetime** — written once, never refreshed:
+      the 8.8 set-mode follow-on (`hostname <new>` in-sandbox)
+      changes the UTS name without touching them (the instance
+      name still resolves; a renamed one does not) — document
+      that as a known limitation (dynamic updating would need a
+      broker round-trip — not worth it). (2) *Binds, a new step
+      between 7 and 8* — strictly **before** the step-8 `/var`
+      mask, because the sources live under `/var/tmp` (the
+      scratch) and become unresolvable after that mask; the
+      targets are the self-bind-layer `/etc`, so plain
+      single-file `MS_BIND`s, exactly like the step-1 dev-node
+      binds: `scratch/etc/hosts → /etc/hosts`,
+      `scratch/etc/hostname → /etc/hostname`, and (none mode)
+      `scratch/etc/resolv.conf → /etc/resolv.conf`. Read-only
+      by construction (no write grant — below). Other
+      candidates evaluated and **kept as the host's**:
+      `machine-id` (XDG machine-scoped state is already
+      namespaced by the private home), `nsswitch.conf` (the
+      `files`-first ordering is exactly what this design
+      wants), `localtime`, `os-release`. (3) *The Landlock
+      subtlety (unconfined floor):* Landlock matches
+      **inodes**, and a bind mount does not change the inode
+      hierarchy — the base `Read` grant on `/etc`
+      (`policy.rs`'s `BASE_READ`) does **not** cover the
+      generated files, whose inodes sit under the scratch
+      (`/var/tmp/…`), not under `/etc`. A file-level rule is
+      required: add `/etc/hosts` and `/etc/hostname` (and
+      `/etc/resolv.conf` only when `config.network == None`)
+      to the base grants in `capability_set`. The same pure
+      function is built in S (pre-fork: resolves to the host
+      inode — redundant but consistent) and in B (pre-exec,
+      **after** A's build: resolves to the scratch inode — the
+      one that matters). A directory-level grant is not a
+      fallback: the scratch dir's path is unresolvable in B
+      after the `/var` mask, so the rules must be on the
+      sandbox-side `/etc/…` file paths. Verify that nono's
+      `allow_path` accepts a file (non-directory) path — the
+      crate source is the reference; the Landlock ABI admits
+      rules on file inodes. (4) *The module (confined mode):*
+      a new type `apse_etc_t` (no attributes — data, not
+      exec). A (already `apse_t`, already allowed to create
+      files under `tmp_t`, rules ~331-332) writes the files;
+      label them with three named filetrans —
+      `(typetransition apse_t tmp_t file "hosts" apse_etc_t)`
+      and siblings for `"hostname"` / `"resolv.conf"` (the
+      same mechanism as the `apse_state_t` creation, ~294,
+      which works on this kernel; if it turns out `tmp_t` is a
+      filetrans-restricted parent, the fallback is an explicit
+      `setxattr` by A after the writes plus
+      `(allow apse_t tmp_t (file (setxattr)))` — decide with
+      the runcon/AVC oracle, LESSONS #70). `apse_t` needs a
+      **new** `(allow apse_t etc_t (file (getattr open read)))`
+      to copy the host's files (today only the dir grant,
+      ~399). The app gets read-only:
+      `(allow apse_app_t apse_etc_t (file (getattr open
+      read)))` — no `write`/`setattr`: a write through
+      `/etc/hosts` would land in the scratch, but the app
+      must not be able to mutate its own identity. Net new:
+      the type declaration + 3 filetrans + 3 allow ≈ 7 lines
+      against the 295. (5) *Docs:* the README rootfs-build
+      table (a new step line), the Landlock line (~172), a
+      threat-model sentence on hostname resolution;
+      `selinux/README.md` gets a "Per-instance `/etc`" section
+      (the label, the filetrans, the read-only rationale).
+      **Verify:** (a) unconfined shared-net run: in-sandbox
+      `cat /etc/hostname` is `apse-<app>-<inst>`; `python3 -c
+      "import socket; print(socket.gethostbyname(socket.gethostname()))"`
+      → `127.0.1.1` **immediately** (time it — milliseconds,
+      not DNS-seconds); `getent hosts <name>` shows the A and
+      AAAA records; (b) `--network=none`: the same, plus
+      `cat /etc/resolv.conf` has no `nameserver` lines and
+      `getent hosts nonexistent.example` fails immediately
+      (no timeout); (c) the host's `/etc/hosts` is
+      byte-identical before and after the run, and a write
+      attempt through the sandbox's `/etc/hosts` fails (EACCES
+      under Landlock in unconfined mode, an AVC in confined —
+      assert both); (d) confined enforcing: a GUI app (foot) +
+      a shell app boot with zero denials, audit baseline flat;
+      (e) a new integration case in
+      `tests/sandbox_integration.rs` (the python3 probe:
+      `/etc/hostname` content +
+      `gethostbyname(gethostname()) == 127.0.1.1`, both
+      network modes); (f) S startup cost unchanged (the
+      generation is 2–3 small file writes).
 
 ## 8. Risks / things to watch
 
