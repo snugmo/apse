@@ -111,6 +111,8 @@
 (typeattributeset cil_gen_require xserver_t)
 (typeattributeset cil_gen_require passwd_file_t)
 (typeattributeset cil_gen_require xserver_exec_t)
+(typeattributeset cil_gen_require mozilla_exec_t)
+(typeattributeset cil_gen_require hostname_exec_t)
 (typeattributeset cil_gen_require init_t)
 (typeattributeset cil_gen_require selinux_config_t)
 (typeattributeset cil_gen_require security_t)
@@ -292,6 +294,20 @@
 ; (see the type's comment); the same fallback transition covers
 ; an exec out of them
 (typetransition apse_t apse_state_t process apse_app_t)
+; task 8.8: dedicated-type *apps* (a binary with a per-purpose
+; label, e.g. Firefox's `mozilla_exec_t`) land in `apse_app_t`
+; like the generic ones; without a matching transition the exec'd
+; process would keep `apse_t` (the no-rule default), i.e. the
+; supervisor's own grants. There is deliberately no *generic*
+; (attribute-object) transition: the transition table is
+; single-valued on (subject, objtype, class), and
+; `xserver_exec_t` is an `application_exec_type` member that must
+; keep its own `xserver_t` target (the Xwayland satellite) — the
+; two would collide. One line per dedicated-type app that is
+; actually run (`hostname_exec_t` is the standing
+; dedicated-type-app probe).
+(typetransition apse_t mozilla_exec_t process apse_app_t)
+(typetransition apse_t hostname_exec_t process apse_app_t)
 ; the state tree's root is created by S under `~/.local/state`
 ; (`gconf_home_t`). This named filetrans is *the* creation-time
 ; mechanism (on this kernel `filecon` does not label created
@@ -327,8 +343,20 @@
 ; is denied even though the typetransition itself passes.
 (allow apse_t xserver_t (process (transition dyntransition noatsecure rlimitinh siginh signal sigkill)))
 (typetransition apse_t xserver_exec_t process xserver_t)
-(allow apse_t xserver_exec_t (file (entrypoint execute getattr map open read)))
-(allow apse_t apse_exec_t (file (entrypoint execute execute_no_trans getattr map open read)))
+; task 8.8: the app-level exec world as the *attribute*
+; `application_exec_type` — the dedicated per-purpose binary
+; types (`mozilla_exec_t`, `xserver_exec_t`, `ifconfig_exec_t`,
+; …): 311 compiled members here, a strict subset of `exec_type`
+; (1048) that excludes init scripts and server daemons *and* the
+; generic catch-alls (`bin_t`/`shell_exec_t`/`usr_t` are *not*
+; members — their enumerated rules stay below and are not
+; absorbed). Absorbs the former `xserver_exec_t` and `apse_exec_t`
+; file rules (both members); the `xserver_t` transition above and
+; the `bin_t`/`shell_exec_t` file rules stay. The same
+; setuid-stripping invariant as the child-level grant below: no
+; `noatsecure`, so a setuid binary exec'd as the app runs
+; setuid-stripped.
+(allow apse_t application_exec_type (file (entrypoint execute execute_no_trans getattr map open read)))
 (allow apse_t apse_t (process (dyntransition fork getattr getsched getsession getrlimit noatsecure ptrace rlimitinh setcurrent setexec setfscreate setkeycreate setpgid setsockcreate transition sigchld siginh signal sigkill signull sigstop)))
 (allow apse_t apse_t (dir (search)))
 (allow apse_t apse_t (file (append create getattr map open read unlink write)))
@@ -711,6 +739,33 @@
 ; objects.
 (allow apse_app_t apse_app_t (fd (use)))
 (allow apse_app_t apse_app_t (key (link search)))
+; task 8.8: `ip` (iproute2) calls `capset(2)` on itself at startup
+; (capability normalisation — the audit target is always the
+; caller's own context: `capset` has no target-pid argument).
+; Self-only and privilege-neutral here: the process holds no
+; permitted capabilities (real uid, setuid stripped), so `capset`
+; can only clear or permute bits it already has — it cannot grant
+; any. Without it `ip` exits 1 before it even opens the netlink
+; socket (audit-verified 2026-11-13).
+(allow apse_app_t apse_app_t (process (setcap)))
+; task 8.8: the RT netlink wave — the functional half of the
+; `ip` denial class. There is no `sockcreate` transition for
+; `apse_app_t`, so a socket the app creates is born with the
+; creator's own context (audit-verified: tctx == sctx) and every
+; operation below is self-targeted (MCS-bounded, as all
+; self-grants are): the app can only ever touch sockets *it*
+; created. `netlink_route_socket` is the RTNL family
+; (`ip link`/`addr`/`route`/`neigh`); other families surface
+; separately if a tool needs them. `netlink_audit_socket` is
+; deliberately *not* granted (reading the audit stream is the
+; 8.7 debugger's business, not the app's). `getattr` is
+; `getsockname` (a distinct check on this kernel, the same
+; pattern as stat-through-symlink). On this kernel the netlink
+; classes carry *additional* `nlmsg_*` permissions (beyond
+; plain `read`/`write`): recvmsg checks `nlmsg_read`, sendmsg
+; `nlmsg_write` (audit-verified) — the standard netlink talk
+; pair.
+(allow apse_app_t apse_app_t (netlink_route_socket (bind create getattr nlmsg_read nlmsg_write read write setopt)))
 (allow apse_app_t apse_app_t (sem (associate create destroy getattr read write setattr unix_read unix_write)))
 (allow apse_app_t apse_app_t (shm (associate create destroy getattr lock read write setattr unix_read unix_write)))
 ; the app's *own* pipes and named pipes: the `manage_fifo_file_perms`
@@ -1074,6 +1129,26 @@
 (allow apse_app_t apse_shim_t (file (execute getattr map open read)))
 (allow apse_app_t apse_shim_t (fd (use)))
 (allow apse_app_t usr_t (file (entrypoint execute execute_no_trans getattr map open read)))
+; task 8.8: the child-level exec world as the *attribute*
+; `application_exec_type` — the dedicated per-purpose types
+; (`ifconfig_exec_t`, `hostname_exec_t`, `ping_exec_t`,
+; `journalctl_exec_t`, …): the denial class this task exists for
+; — none of them had a rule here, so an in-sandbox shell could
+; not even *start* them. 311 compiled members, a strict subset of
+; `exec_type` (1048) excluding init scripts and server daemons
+; *and* the generic catch-alls — `bin_t`/`shell_exec_t`/`usr_t`
+; are *not* members, so their enumerated rules stay (above). No
+; `noatsecure`: a setuid exec runs setuid-stripped (the app is
+; the user's real uid, so DAC stays the backstop — a setuid
+; binary the app could already read gains no privilege); with no
+; transition rule matching, the child stays `apse_app_t`
+; (`execute_no_trans`) and inherits the whole envelope (landlock
+; can only shrink across exec, the seccomp filter, the
+; namespaces, the MCS category) — the grant widens *which*
+; binaries load, not *what* the process can do. The *functional*
+; grants the tools then need (e.g. `netlink` for `ip`) are
+; separate per-tool rules.
+(allow apse_app_t application_exec_type (file (entrypoint execute execute_no_trans getattr map open read ioctl)))
 ; the app resolves and stats the system trees it execs from
 ; (path lookup = search on every dir of the path; stat = getattr;
 ; symlinked components = lnk_file read for readlink, and — on this
@@ -1090,9 +1165,13 @@
 ; The symlinks among them are covered by the
 ; `non_security_file_type` `lnk_file` grant (every `exec_type`
 ; member is in the attribute — seinfo-verified); the regular
-; files need this explicit `file:getattr` — no attribute grant
-; in this module reaches the `file` class (readlink is a
-; separate check on this kernel)
+; files need this explicit `file:getattr` for the `exec_type`
+; members *outside* `application_exec_type` (the remainder: init
+; scripts, daemons, inetd services — e.g. an `ls -l /usr/sbin`
+; scan): no attribute grant in this module reaches them (the 311
+; `application_exec_type` members get `getattr` from the
+; attribute grant above, the base-set members from their own
+; rules; readlink is a separate check on this kernel)
 (allow apse_app_t exec_type (file (getattr)))
 ; fontconfig's directory scans: the system tree and the user's
 ; `~/.local/share/fonts`; `$XDG_DATA_HOME` enumeration stats every

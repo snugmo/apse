@@ -77,7 +77,11 @@ the module uses them; otherwise the file is bare statements.
   namespace/userns/cap setup, and the `/proc/self/exe` re-execs.
 - `apse_app_t` — sandboxed-app domain. B execs the app while in
   `apse_t`; the app (and its subprocesses) land here via the
-  `bin_t`/`shell_exec_t`/`apse_state_t` transition.
+  `bin_t`/`shell_exec_t`/`apse_state_t` transitions and — since
+  v2.32 — the dedicated-type app transitions
+  (`mozilla_exec_t`/`hostname_exec_t`; the generic
+  attribute-object form is infeasible — see the exec-world
+  section).
   "Confined user app": instance dir, /tmp, /dev nodes, /proc /sys
   /cgroup /etc, home (the private per-app state tree —
   `apse_state_t`, decision #43), system libs, session bus, loopback
@@ -274,6 +278,98 @@ broker (`s0`) can reach them, because any `cN` dominates plain
 `s0`. (An earlier version of this note assumed objects carry the
 creator's range and recommended pre-creating the dir at `s0`; that
 premise was wrong — the dir is `s0` by construction.)
+
+## The dedicated-type exec world (task 8.8, v2.32)
+
+The `ip`/`hostname` denial class: the distro labels most of the
+~2,600 user executables with per-purpose *dedicated* types
+(`ifconfig_exec_t`, `hostname_exec_t`, `ping_exec_t`, … — 141
+distinct types in the bin/libexec trees here), and the module
+originally covered about three of them, so an in-sandbox shell
+could not even *start* the tools (`file:execute` denied at two
+levels: B's exec of a dedicated-type *app*, and an in-sandbox
+shell's exec of such a *child*; `route` always worked because it
+is `bin_t`). The fix is a grant on the base policy's
+**`application_exec_type` attribute**, at both levels:
+
+- **child level** (`apse_app_t`): the full exec union
+  (`entrypoint execute execute_no_trans getattr map open read
+  ioctl`) on `application_exec_type`;
+- **app level** (`apse_t`): the same union minus `ioctl`. It
+  absorbs the former per-type file rules on `xserver_exec_t` and
+  `apse_exec_t` (both members of the attribute); their
+  transitions stay.
+
+**Why `application_exec_type` and not the wider `exec_type`**
+(the original plan) — a refinement that inverts the attribute's
+apparent meaning (LESSONS #76): on this system the attribute is
+the *dedicated* set — 311 compiled members, a strict subset of
+`exec_type`'s 1048. What it excludes is exactly what a real-uid
+app should never exec: init scripts, server daemons, inetd
+services — **plus the generic catch-alls** `bin_t` /
+`shell_exec_t` / `usr_t`, which are `exec_type` members but *not*
+`application_exec_type` members (they cover the other ~91% of
+world-executables). Those three keep their enumerated rules, so
+nothing about the generic tools (foot, htop, less, `sh`) changes;
+the union of attribute + catch-alls is "everything but the
+daemon/init dedicated types". The `exec_type` variant would only
+have bought a slimmer rule list (net −6 vs ~0 here) at the cost
+of exec surface over 737 extra types that are DAC root-only for
+a real-uid app anyway. Membership oracle: `seinfo -a <attr> -x`
+(this `sesearch` does not resolve attribute membership in rule
+queries).
+
+**Setuid-stripping invariant (both levels):** neither grant
+carries `noatsecure`. Exec of a setuid binary then triggers
+secure-exec and the kernel leaves the euid at the caller's (1000
+— the setuid bit is inert). Verified: `su` (`su_exec_t` is a
+member) *execs* inside the sandbox but its privilege machinery
+fails — PAM cannot authenticate, because its helper
+`unix_chkpwd` is itself setuid-root and equally stripped — no
+escalation. `pkexec` (`pkexec_t` is *not* a member) stays denied
+outright. DAC remains the backstop either way: the app reaches
+only files it can already read as its real uid.
+
+**The app transitions stay enumerated** (one line per
+dedicated-type app actually run — `mozilla_exec_t` (Firefox) and
+`hostname_exec_t` (the standing probe) were added in v2.32). A
+*generic* attribute-object `typetransition` is infeasible, not
+merely unverified (LESSONS #77): the transition table is
+single-valued on (subject, objtype, class), and `xserver_exec_t`
+is an `application_exec_type` member that must keep its own
+`xserver_t` target (the Xwayland satellite) — a 311-member
+expansion collides with it at install. The transitions also
+matter as the fallback when B's one-shot exec context
+(`setexecfilecon`) is unavailable (a no-match exec would keep
+B's own `apse_t` context — the supervisor's grants — instead of
+landing in `apse_app_t`).
+
+**The functional wave the tools then need** (per tool, the
+second half of 8.8): `ip` — `process:setcap` (iproute2's
+startup `capset(2)`: always self-targeted — the syscall has no
+target pid — and privilege-neutral here: the process holds no
+permitted capabilities, so it can only clear or permute) and a
+`netlink_route_socket` self-grant (`bind create getattr
+nlmsg_read nlmsg_write read write setopt`). Kernel details
+(LESSONS #78): this 7.2 kernel's netlink classes carry
+*separate* `nlmsg_*` permissions — recvmsg checks `nlmsg_read`,
+sendmsg `nlmsg_write` (plain `read`/`write` is not the check);
+`getsockname` is the distinct `getattr` (the stat-through-symlink
+pattern); and with no `sockcreate` filetrans in play a socket is
+born in the *creator's* context, so the whole grant is
+self-targeted and MCS-bounded. `hostname` (get mode) needed
+nothing beyond exec — the read path has no MAC check, and the
+**set** mode is intentionally not granted (the UTS hostname is
+the instance's private identity). Deliberately *not* granted:
+`ping`/`traceroute`-class raw and ICMP sockets (packet-sniffing
+capability in a shared netns — a separate policy decision, not a
+tooling convenience), `netlink_audit_socket` (8.7's
+business), and `journalctl`'s journal reads (the fresh `/run`
+carries no runtime journal; the persistent one is host data).
+The narrow `exec_type:file:getattr` rule stays — it is now
+*precisely* the stat() path for the `exec_type` remainder
+outside `application_exec_type` (the daemon/init trees, e.g.
+`ls -l /usr/sbin`).
 
 ## Denial-tuning notes (2026-11-12 round)
 

@@ -1635,3 +1635,55 @@ write-up.
    grant, for dash's `TCGETS` probe of the script it is running (the
    probe's `subprocess.run([script])` → `/bin/sh`). — *task 8.9
    tuning; `selinux/apse.cil`.*
+
+76. **`application_exec_type` is the *dedicated* per-purpose set, not
+   "most normal binaries" — the attribute's name is a trap.** On this
+   system the base-policy attribute has 311 compiled members and is a
+   *strict subset* of `exec_type` (1048 members). What it excludes is
+   exactly what a real-uid app should never exec: init scripts,
+   server daemons, inetd services — *and* the generic catch-alls
+   `bin_t`/`shell_exec_t`/`usr_t`, which are `exec_type` members but
+   *not* `application_exec_type` members (here ~91% of the 2,718
+   world-executables are `bin_t` alone). So "attribute grant + the
+   existing enumerated catch-all rules" is precisely
+   "everything but the daemon/init dedicated types": the intended
+   user-tool surface (the `ip`/`hostname` denial class) is covered,
+   the daemon surface stays closed, and nothing about the generic
+   tools changes. Membership oracle: `seinfo -a <attr> -x` — this
+   `sesearch` does *not* resolve attribute membership in rule
+   queries (a `-t` query against a rule whose target is an attribute
+   returns the raw rule for *any* type, member or not), so "which
+   types does this grant actually widen?" can only be answered
+   through `seinfo`. — *task 8.8 (v2.32); `selinux/apse.cil`.*
+
+77. **A generic attribute-object `typetransition` is infeasible, not
+   just unverified — the transition table is single-valued on
+   (subject, objtype, class).** Writing
+   `(typetransition apse_t application_exec_t process apse_app_t)`
+   would expand the attribute into its 311 members and map
+   *every* of them — including `xserver_exec_t`, which must keep its
+   own `xserver_t` target (the Xwayland satellite's exec — a
+   different domain with its own grants) — to `apse_app_t`,
+   colliding with the existing `xserver_exec_t → xserver_t` rule at
+   install. The app transition set therefore stays enumerated (one
+   line per dedicated-type app actually run; v2.32 added
+   `mozilla_exec_t` and `hostname_exec_t`), and the enumeration also
+   matters as the fallback when B's one-shot exec context
+   (`setexecfilecon`) is unavailable: a no-match exec would keep B's
+   own `apse_t` context (the supervisor's grants) instead of landing
+   in `apse_app_t`. — *task 8.8 (v2.32); `selinux/apse.cil`.*
+
+78. **On this 7.2 kernel the netlink socket classes carry *separate*
+   `nlmsg_read`/`nlmsg_write` permissions — plain `read`/`write` is
+   not the check for recvmsg/sendmsg.** `ip`'s RTNL round trip failed
+   in three stages, each a distinct audit row: `create` (obvious),
+   `getsockname` (the distinct `getattr` — the same pattern as
+   stat-through-symlink), and finally `Cannot send dump request` →
+   the audit demanded `nlmsg_read` on `netlink_route_socket` (the
+   send side checks `nlmsg_write`). The companion finding that makes
+   the whole grant safe: there is no `sockcreate` filetrans for
+   `apse_app_t`, so a socket the app creates is born in the
+   *creator's* own context (audit-verified: tctx == sctx) — every
+   socket operation is self-targeted and therefore MCS-bounded, like
+   any other self-grant; the app can only ever touch sockets it
+   created. — *task 8.8 (v2.32); `selinux/apse.cil`.*

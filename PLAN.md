@@ -2,35 +2,55 @@
 
 ## Status
 
-Current: **v2.31** (2026-11-13; enforcing, kernel 7.2.15).
-The `home = "host"` profile mode is dropped (task 8.9, decision
-#44): the private home (decision #43) is the only mode — the
-`home` field is gone (a `home = "…"` line in a user TOML is a
-hard parse error, `deny_unknown_fields` — the migration signal),
-the mode branches in `policy.rs` / `mounts.rs` / `sandbox/mod.rs`
-are unconditional, and the module's 14 app-side home-family
-rules went (the supervisor-side home rules and the app's
-path-traversal grants stay; two traversal-only grants went in —
-the shim compiler's `collect2`/`ld` children probe the real
-home while linking). Underneath, v2.30's per-instance
-`/etc` files (`hosts`/`hostname` generated into the per-instance
-runtime dir and bound over the self-bind `/etc`, so the
-sandbox's UTS name resolves on loopback from `files` with no DNS
-fallback; read-only: the Landlock file grants, `apse_etc_t` in
-confined mode) and the module state is v2.29: the app domain
-carries the base `domain` attribute's file-read set *as written*
-on `base_file_type` / `base_ro_file_type` (v2.27), plus
-(v2.29) the `non_security_file_type` **metadata-only** grants
-(lstat + readlink), and the cert / /dev-node / devpts grants
-aligned to the base session profiles (the cert grants ride the
-`cert_type` attribute). The v2.30 pass was net +17 (285 → 302);
-this one is net −12 (302 → 290).
-`exec_type:file:getattr` *stays* — it is the sole stat() path to
-the 140 per-purpose exec types in the bin/libexec trees (8.8's
-`exec_type`-wide exec grant absorbs it). The broad `file_type:*
-map` grant (v2.25) remains dropped: A/B-verified inert on this
-kernel, `open()` gates file access (LESSONS #71). The v2.24/2.25
-/proc closure is preserved.
+Current: **v2.32** (2026-11-13; enforcing, kernel 7.2.15).
+Task 8.8 — the dedicated-type exec world (the `ip`/`hostname`
+denial class): the exec grants target the base
+**`application_exec_type`** attribute (a refinement of the
+original `exec_type` plan — and its name is a trap: it is the
+*dedicated* set, 311 compiled members, a strict subset of
+`exec_type`'s 1048; what it excludes is exactly the init
+scripts, server daemons and inetd services a real-uid app should
+never exec — plus the generic catch-alls
+`bin_t`/`shell_exec_t`/`usr_t`, which are *not* members and keep
+their enumerated rules). Both levels: app side (`apse_t` —
+`apse run -- <dedicated-type app>` now works: `hostname`,
+`firefox`/`mozilla_exec_t`; the former `xserver_exec_t`/
+`apse_exec_t` file rules are absorbed) and child side
+(`apse_app_t` — the in-sandbox shell can start the denial
+class: `ifconfig_exec_t`, `hostname_exec_t`, `ping_exec_t`,
+…). No `noatsecure` at either level: a setuid exec runs
+setuid-stripped (secure-exec) — verified: `su` execs but
+cannot authenticate (its `unix_chkpwd` helper is equally
+stripped), no escalation; `pkexec` (not a member) stays denied.
+The app transitions stay **enumerated** — a generic
+attribute-object `typetransition` is infeasible (the transition
+table is single-valued on (subject, objtype, class), and
+`xserver_exec_t`, a member, must keep its own `xserver_t`
+target): two were added (`mozilla_exec_t`, `hostname_exec_t`).
+The functional wave: `process:setcap` (`ip`'s self-`capset` —
+self-only, privilege-neutral) and a `netlink_route_socket`
+self-grant (RTNL: this 7.2 kernel's netlink classes carry
+separate `nlmsg_read`/`nlmsg_write` permissions and
+`getsockname` is the distinct `getattr`; the socket is born in
+the creator's context, so the grant is self-targeted and
+MCS-bounded). Deliberately left denied: `ping`/`traceroute`-
+class raw and ICMP sockets (packet-sniffing in a shared netns —
+a separate policy decision, not a tooling convenience),
+`netlink_audit_socket` (8.7), and `journalctl`'s journal reads
+(the fresh `/run` carries no runtime journal; the persistent one
+is host data). `exec_type:file:getattr` *stays* — it is now
+*precisely* the stat() path to the `exec_type` remainder outside
+`application_exec_type` (the daemon/init trees). The module is
+net +4 (297 → 301: 291 allow + 10 typetransition). Underneath:
+v2.31 dropped the `home = "host"` profile mode (decision #44 —
+the private home is the only mode; the `home` field is a hard
+parse error now, the 14 app-side home-family module rules went,
+two traversal-only grants went in), on top of v2.30's
+per-instance `/etc` files and v2.29's `non_security_file_type`
+metadata grants. The broad `file_type:* map` grant (v2.25)
+remains dropped: A/B-verified inert on this kernel, `open()`
+gates file access (LESSONS #71). The v2.24/2.25 /proc closure
+is preserved.
 
 Open: **6.4** (the varlink tier) — parked until a released systemd ships
 `PIDs` in scope contexts (re-checked 2026-11-04: v263 still in
@@ -38,15 +58,75 @@ development; Fedora 45's 262.1 has no user-bus varlink socket);
 **8.6** (a per-invocation `--no-selinux` flag) — the root-only,
 persistent file-relabel escape as a CLI knob; **8.7** (in-sandbox
 debugging: a boolean-gated `ptrace` grant + `debug` profile/flag) —
-gdb/strace inside a confined run; **8.8** (an `exec_type`-wide exec
-grant) — the `ip` / `hostname` denial class: one attribute grant
-instead of chasing 141 distribution exec labels; the per-tool work
-moves to functional grants (netlink). Deferred denial
+gdb/strace inside a confined run. Deferred denial
 classes (user's call, accepted — not sandbox use cases): fish's
-completion *executing* the enumerated admin tools, the `find /` class,
-the metadata sweeps (`getfattr -R`; the python3 man readlink sweep).
+completion *executing* the enumerated *daemon/init* admin tools
+(the v2.32 `application_exec_type` grant covers the dedicated
+user-tool types, so only the excluded daemon/init remainder of
+the 141 stays denied), the `find /` class,
+the metadata sweeps (`getfattr -R`; the python3 man readlink
+sweep), and the `ping`/`traceroute` raw/ICMP socket class (a
+sniffing capability in a shared netns — a separate policy
+decision if it ever becomes a use case).
 
 ### Change log (newest first)
+
+- **v2.32** (2026-11-13; enforcing): task 8.8, the dedicated-type
+  exec world. *Mechanism:* the exec grants move from
+  per-type rules to the base `application_exec_type` attribute —
+  the user's refinement of the original `exec_type` plan, after
+  checking the compiled membership (`seinfo -a <attr> -x`): 311
+  members, a strict subset of `exec_type`'s 1048; the excluded
+  737 are init scripts, server daemons, inetd services, **and
+  the generic catch-alls** `bin_t`/`shell_exec_t`/`usr_t` (not
+  members — the attribute is the *dedicated* set, not "most
+  normal binaries"). *Module* (net +4: 297 → 301; 291 allow + 10
+  typetransition): (1) `apse_app_t` → `application_exec_type`
+  `file` with the full exec union (`entrypoint execute
+  execute_no_trans getattr map open read ioctl`); (2) `apse_t` →
+  the same union minus `ioctl` — absorbing the former
+  `xserver_exec_t`/`apse_exec_t` file rules (both members);
+  (3) two new app transitions `apse_t → {mozilla_exec_t,
+  hostname_exec_t} process apse_app_t` — the generic
+  attribute-object form is infeasible (the transition table is
+  single-valued on (subject, objtype, class); `xserver_exec_t`,
+  a member, must keep its `xserver_t` target — the Xwayland
+  satellite), so the set stays enumerated, one line per
+  dedicated-type app actually run; (4) the functional wave:
+  `apse_app_t` self `process:setcap` (iproute2's startup
+  `capset(2)` — self-only, privilege-neutral: no permitted
+  capabilities to gain) and `apse_app_t` self
+  `netlink_route_socket (bind create getattr nlmsg_read
+  nlmsg_write read write setopt)` — this 7.2 kernel's netlink
+  classes carry separate `nlmsg_*` permissions (recvmsg →
+  `nlmsg_read`, sendmsg → `nlmsg_write`) and `getsockname` is
+  the distinct `getattr`; the socket is born in the creator's
+  context (no `sockcreate` filetrans), so self-targeted and
+  MCS-bounded. Stays: all `bin_t`/`shell_exec_t`/`usr_t` rules
+  (not members), the `exec_type:file:getattr` stat rule (now
+  precisely the stat path for the `exec_type` remainder —
+  daemon/init trees), the xserver transition and its
+  new-process checks, `netlink_audit_socket` (8.7). *Invariant
+  documented:* no `noatsecure` at either level — a setuid exec
+  runs setuid-stripped (secure-exec): `su` execs but cannot
+  authenticate (its `unix_chkpwd` helper is equally stripped),
+  `pkexec` (not a member) stays denied, DAC remains the
+  backstop. *Verified* (enforcing, zero denials across the
+  battery): baseline reproduced pre-change (`route` OK, `ip`/
+  `hostname` `file:execute` denied); after — child level: `ip
+  link`/`ip addr` (the full RTNL round trip), `hostname` (prints
+  the instance's own UTS name), `gpg --version`, `journalctl`
+  (executes; its journal reads are a separate host-data
+  decision), `su` (execs, stripped, no escalation); app level:
+  `apse run -- /usr/bin/hostname` starts (previously "never even
+  starts") and the app's `/proc/self/attr/current` shows
+  `apse_app_t:s0:cN`; the full suite (231 tests,
+  single-threaded) passes. Deferred: `ping`/`traceroute`
+  raw/ICMP sockets (a sniffing capability in a shared netns —
+  separate policy decision), journal reads. `selinux/README.md`
+  documents the grant, the attribute's actual membership, the
+  setuid-stripping invariant, and the transition infeasibility
+  (LESSONS #76-78).
 
 - **v2.31** (2026-11-13; enforcing): task 8.9, the `home = "host"`
   profile mode is dropped (decision #44): the private home
@@ -1565,155 +1645,87 @@ audited as a write).
       (boolean off, no debugger) — zero denials, no behavior
       change. Document in `selinux/README.md` (Operating modes →
       debugging) and in AGENTS.md.
-- [ ] 8.8 *(future)* `exec_type`-wide exec grant — the `hostname` /
-      `ip` denial class: stop chasing the distribution's per-binary
-      exec labels. **The denials (audit-verified, v2.25 enforcing,
-      2026-11-13):** at *two* levels, both `file:execute` (plus
-      `read` at the child level): (1) *app* level — B's execve of
-      the app fails when the app binary carries a dedicated type
-      (`apse_t → hostname_exec_t / ifconfig_exec_t: file
-      {execute}` — `apse run -- /usr/bin/ip` never even starts);
-      (2) *child* level — an in-sandbox shell exec'ing such a tool
-      (`apse_app_t:s0:c1007 → ifconfig_exec_t: file {execute,
-      read}`). `route` works because it is `bin_t`, which both
-      enumerated grant lists cover (module lines ~407 / ~896);
-      `ip` is `ifconfig_exec_t`, `hostname` is `hostname_exec_t` —
-      in neither. Scale on this machine: ~2,600 user-executables in
-      `/usr/bin` + `/usr/sbin` spread over **141 distinct file
-      types**; the module's lists cover about three of them. Most of
-      the rest are root-only by DAC (no friction for a real-uid
-      app); the friction class is innocuous user tools with
-      dedicated types (`ip`, `hostname`, `ping`, `traceroute`,
-      `netutils`, `journalctl`, `gpg`, `pinentry`, `crack`, …).
-      **Mechanism — grant the base-policy `exec_type` *attribute*,
-      not `file_type`** (user's refinement, verified): `exec_type`
-      is the attribute the base policy attaches to executable-file
-      types, whereas `file_type` is the generic type for
-      *everything* file-like — the attribute keeps the exec set on
-      executables only. That set must be the **full exec union**
-      `entrypoint` / `execute` / `execute_no_trans` / `getattr` /
-      `map` / `open` / `read` (plus `ioctl` at the child level,
-      for the `cp`-style probe in the `bin_t` rule): every
-      enumerated rule uses `entrypoint` + `map`, so a narrower
-      grant (the original `open` / `read` / `getattr` / `execute`
-      / `execute_no_trans` draft) subsumes **nothing** and the
-      rule count goes *up*, not down. (a) *Child level:* `allow
-      apse_app_t exec_type (file (entrypoint execute
-      execute_no_trans getattr map open read ioctl))` — **no
-      `noatsecure`**: a setuid exec then
-      runs setuid-stripped (secure-exec), so `pkexec` / `su` gain
-      nothing, and DAC remains the backstop (the app is the user's
-      real uid — only files it can already read/exec are
-      reachable); no transition rule matches, so the child stays
-      `apse_app_t` (`execute_no_trans`) and inherits the whole
-      envelope (landlock can only shrink across exec, the seccomp
-      filter, the namespaces, the MCS category) — the grant widens
-      *which* binaries load, not *what* the process can do.
-      (b) *App level:* `allow apse_t exec_type (file (entrypoint
-      execute execute_no_trans getattr map open read))` (same
-      union, minus the child-only `ioctl`) plus, as an
-      experiment, a **generic-type transition** (`type_transition
-      apse_t exec_type process apse_app_t` — the attribute in the
-      object slot; the target-slot form is proven, the object-slot
-      form is the open question) so B can start *any* executable as
-      the app; if the toolchain rejects it, keep the transition set
-      enumerated (the apps the user runs are few and mostly
-      `bin_t`) and accept that a dedicated-type *app* needs one
-      line each.
-      **Why not a flatpak-style runtime container instead** (the
-      user's proposal, evaluated): flatpak solves label diversity by
-      *extracting* content into a user-owned tree so the whole tree
-      can share one label (verified here:
-      `~/.local/share/flatpak/repo` is all `flatpak_home_t`) — only
-      new inodes can carry a new label (a bind mount shares the
-      inode; a symlink is checked against its target's type). For
-      apse that would mean copying/curating the OS into an
-      apse-owned tree: multi-GB, stale (ABI drift against the host
-      kernel), double updates — and it inverts the product (run
-      *host* apps, not repackaged ones); it would not even fully
-      solve it, because the app's own files stay host-labeled and
-      the app-level set would still chase types. The per-type exec
-      set was never a real boundary in this threat model (a child
-      inherits the full envelope) — it is a completeness accident,
-      and `exec_type` removes it in two lines.
-      **Verified on this toolchain** (Fedora 45, policycoreutils
-      3.11, `semodule -i` CIL mode): a probe module using
-      `exec_type` in an allow target slot installs cleanly
-      (undefined identifiers fail at install, so the attribute
-      exists and the compiled policy expands it), and a `runcon`
-      exec oracle (a probe process type exec'ing one world-exec
-      file per type) shows **141/141** types covered, zero
-      denials. Note for the verify steps: this `sesearch` does
-      *not* resolve attribute membership in rule queries (a `-t`
-      against an attribute-valued rule returns the raw rule for
-      *any* type — `usr_t` included), so membership checks go
-      through the runcon exec oracle or — better —
-      `seinfo -a exec_type -x`, which enumerates the attribute's
-      *compiled* member types straight from the loaded policy
-      (what the Rule count below is based on).
-      **Rule count (verified 2026-11-13, `seinfo -a exec_type -x`:
-      1048 compiled members):** the grant absorbs **eight**
-      existing allow rules for **two** new ones — *net −6 of the
-      module's 295* (~2%). The `apse_t` side loses
-      `xserver_exec_t` / `apse_exec_t` / `bin_t` /
-      `shell_exec_t` (module lines ~309/310/407/410); the
-      `apse_app_t` side loses `shell_exec_t` / `bin_t` / `usr_t`
-      plus the existing narrow `exec_type`-file `getattr` rule
-      (~669/896/911/929). All of those targets carry
-      `exec_type` — including `usr_t` (surprise: it *is* a member,
-      though it mostly labels data files) and `apse_exec_t` (the
-      module itself adds it, ~line 157). What *stays*: `lib_t` ×2
-      and `ld_so_t` ×2 (shared libraries and the dynamic linker
-      are *not* `exec_type` — the earlier runcon denial for
-      `ld-linux-x86-64.so.2` matches), `apse_shim_t` (the
-      LD_PRELOAD `.so`), the home-content rules
-      (`user_home_t` / `gconf_home_t` / `apse_state_t` — the
-      app's *own* files, never `exec_type`), and all
-      `dir` / `lnk_file` traversal rules (path lookup and
-      readlink — a different class; and `execve` through a
-      symlink checks the *target's* label, so
-      `exec_type:lnk_file` stays its own rule). The real gain is
-      structural, not arithmetic: today *every* dedicated-type
-      binary the user wants to run costs one more rule + rebuild
-      + retest (the `ip` / `hostname` class this task exists for —
-      neither type has a rule at all today), while the grant
-      covers all 1048 members at once and stays immune to distro
-      filecon relabels. One trade-off to weigh at implement time:
-      the `apse_t`-side grant widens the trusted supervisor's
-      exec surface from ~6 named types to all 1048 — the same
-      class as the current `bin_t` rule (no typetransition, so an
-      exec'd foreign binary *stays* `apse_t`), but if that
-      matters the minimal variant grants `exec_type` to
-      `apse_app_t` only (net −3, `apse_t` side untouched) — at
-      the cost of leaving `apse run -- <dedicated-type app>`
-      broken, which is the app-level half of this task.
-      **Follow-on: the *functional* grants (the real per-tool
-      tuning).** Once exec is no longer the gate, the next denial
-      wave is what the tools *do*: `ip` needs the `netlink` socket
-      classes (the module grants **no** netlink to `apse_app_t` at
-      all today). `hostname`: **get** mode (the 99% case — dev scripts
-      reading the instance's identity) needs nothing more (verified
-      2026-11-13: `uname -n` / `gethostname()` in a live sandbox,
-      zero denials — the `sys` class's only hostname permission is
-      `sethostname`, set-only; the read path has no MAC check).
-      **set** mode is intentionally *not* granted: the UTS hostname
-      is the instance's private identity (`apse-<app>-<inst>`),
-      set by apse at sandbox init; the app can read it but not
-      change it. `netlink_audit_socket` stays denied (8.7 note).
-      **Verify** (target machine, confined binary, enforcing):
-      (a) baseline before the change: `route` OK, `ip` /
-      `hostname` denied (reproduce the audit rows above);
-      (b) after: from an in-sandbox shell, `ip link`, `hostname`,
-      plus a few more dedicated-type tools — no `file:execute`
-      denials; (c) setuid: `su` / `pkexec` exec inside stays the
-      user's uid (stripped — no credential change); (d) the
-      generic-type transition (if accepted): `apse run --
+- [x] 8.8 Dedicated-type exec grant — the `hostname` / `ip`
+      denial class (2026-11-13, v2.32): stop chasing the
+      distribution's per-binary exec labels. **As implemented
+      (refined from the original `exec_type` plan):** the grant
+      targets the base **`application_exec_type`** attribute
+      instead — checked with `seinfo -a <attr> -x` (the
+      compiled membership oracle: this `sesearch` does not
+      resolve attribute membership in rule queries), that is
+      311 members, a strict subset of `exec_type`'s 1048. The
+      exclusion is exactly the intended boundary: init scripts,
+      server daemons, inetd services — plus the generic
+      catch-alls `bin_t`/`shell_exec_t`/`usr_t`, which are
+      `exec_type` members but *not* `application_exec_type`
+      members (on this box the attribute is the *dedicated* set,
+      not "most normal binaries" — LESSONS #76). Those three
+      keep their enumerated rules, so the union (attribute +
+      catch-alls) is everything but the daemon/init dedicated
+      types, and nothing about the generic tools changes.
+      *Both levels* got the full exec union (`entrypoint
+      execute execute_no_trans getattr map open read` — plus
+      `ioctl` at the child level): `apse_t` (absorbing the
+      former `xserver_exec_t`/`apse_exec_t` file rules — both
+      members) and `apse_app_t`. No `noatsecure` at either
+      level: a setuid exec runs setuid-stripped (secure-exec —
+      the kernel leaves the euid at the caller's), so
+      `su`/`pkexec`-class tools gain nothing; verified: `su`
+      execs but cannot authenticate (its setuid-root helper
+      `unix_chkpwd` is equally stripped — no escalation),
+      `pkexec` (not a member) stays denied, and DAC remains the
+      backstop. **The generic (attribute-object)
+      `typetransition` did not happen** — infeasible, not just
+      unverified (LESSONS #77): the transition table is
+      single-valued on (subject, objtype, class), and
+      `xserver_exec_t` is an `application_exec_type` member
+      that must keep its own `xserver_t` target (the Xwayland
+      satellite), so a 311-member expansion collides at
+      install. The app transition set therefore stays
+      enumerated (one line per dedicated-type app actually
+      run): `mozilla_exec_t` (Firefox) and `hostname_exec_t`
+      (the standing dedicated-type-app probe) were added.
+      **Follow-on (the functional half, done):** `ip` needed
+      two grants — `process:setcap` (iproute2's startup
+      `capset(2)`; always self-targeted, privilege-neutral
+      here) and the `netlink_route_socket` self-grant (this
+      7.2 kernel's netlink classes carry separate
+      `nlmsg_read`/`nlmsg_write` permissions; `getsockname` is
+      the distinct `getattr`; the socket is born in the
+      creator's context — no `sockcreate` filetrans — so the
+      grant is self-targeted and MCS-bounded). `hostname` get
+      mode needed nothing more; **set** mode is intentionally
+      *not* granted (the UTS hostname is the instance's private
+      identity, set by apse at sandbox init). Deliberately
+      *not* granted (accepted, the "Deferred denial classes"
+      list): `ping`/`traceroute` raw and ICMP sockets (a
+      packet-sniffing capability in a shared netns — a separate
+      policy decision, not a tooling convenience),
+      `netlink_audit_socket` (8.7), and `journalctl`'s journal
+      reads (the fresh `/run` carries no runtime journal; the
+      persistent one is host data). The narrow
+      `exec_type:file:getattr` rule stays — it is now precisely
+      the stat() path for the `exec_type` remainder outside
+      `application_exec_type` (the daemon/init trees, e.g.
+      `ls -l /usr/sbin`). The `exec_type`-wide variant would
+      only have bought a slimmer rule list (net −6 vs the
+      actual +4) at the cost of exec surface over 737 extra
+      types that are DAC root-only for a real-uid app anyway;
+      the structural gain (no more rule+rebuild+retest per
+      dedicated type; immune to distro filecon relabels) is the
+      same either way. **Verified** (enforcing; the battery in
+      the v2.32 change-log entry): baseline reproduced
+      pre-change (`route` OK; `ip`/`hostname` `file:execute`
+      denied at both levels); after — child level: `ip link`/`ip
+      addr` with a full RTNL round trip, `hostname` (prints
+      `apse-<app>-<inst>`), `gpg --version`, `journalctl`
+      (executes), `su` (execs, stripped, no escalation) — zero
+      `file:execute` denials; app level: `apse run --
       /usr/bin/hostname` starts and the in-sandbox
-      `/proc/self/attr/current` shows `apse_app_t`; (e) tuning
-      loop through the netlink wave to zero denials for the tools
-      actually used; (f) CI unaffected (the
-      test-suite binary is unrelabeled). Document the grant and
-      the setuid-stripping invariant in `selinux/README.md`.
+      `/proc/self/attr/current` shows `apse_app_t:s0:cN` —
+      zero denials; the full suite (231 tests, single-threaded)
+      passes. Documented in `selinux/README.md` (The
+      dedicated-type exec world).
 - [x] 8.9 Drop the `home = "host"` profile mode (2026-11-13,
       v2.31) — per decision #44 the private home is the only mode.
       **What
