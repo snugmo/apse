@@ -1437,3 +1437,24 @@ write-up.
    before joining; `domain` is the canonical case. — *the v2.25 completeness
    pass (2026-11-12, kernel 7.2.15, enforcing); a 24-point grant probe in a
    live `apse run` (zero denials, the audit `denied` baseline flat).*
+69. **`id -Z` failing in the sandbox with "works only on an SELinux-enabled
+   kernel" is a rootfs artifact, not a policy denial.** libselinux's
+   "is the kernel SELinux-enabled" probe (what coreutils' `id --context`
+   uses) `statfs`es `/sys/fs/selinux` and expects `SELINUX_MAGIC` (strace
+   order: `statfs("/sys/fs/selinux")` → `access("/etc/selinux/config")` →
+   `openat("/proc/thread-self/attr/current")`). The rebuilt rootfs leaves
+   `/sys/fs` **empty** (fresh `/sys` tmpfs with only the binds the app
+   needs; the cgroup2 fs is not re-rooted — decisions #12/#20, asserted by
+   the 8.4 test), so the probe gets ENOENT and `id` bails out *before
+   ever trying the attr read* — which would have succeeded (a sandboxed
+   `cat /proc/self/attr/current` returns the app's own context; the audit
+   showed zero AVCs for the whole run). Any libselinux consumer gating on
+   that probe will misreport "no SELinux on this kernel" in the sandbox.
+   The fix, if it ever matters: bind the `/sys/fs/selinux` mount (a
+   superblock root, not a sysfs subpath — decision #18's EINVAL doesn't
+   apply) into the sandbox's `/sys/fs`; the dangerous files there
+   (`enforce`, `disable`, `load`) are root-owned with no group/other
+   write, and the app is its real uid (uid 0 unmapped, #9), so DAC keeps
+   them unwritable. — *diagnosed 2026-11-13 (kernel 7.2.15, enforcing,
+   v2.25): `id -Z` in a confined `apse run`; the strace / `stat -f` /
+   empty-audit triangle closed the chain.*
