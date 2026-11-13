@@ -569,7 +569,8 @@
 ;     rule in this block
 ;   `self:file rw_file_perms` → the file rule above (`rw_file_perms`
 ;     adds `ioctl`/`lock` — flock on our own files is the lockfile
-;     pattern; `map` comes from the file_type rules below)
+;     pattern; `map` is carried in the self rule itself — the
+;     tunable-gated case, kept for our own files only)
 ;   `self:fifo_file rw_fifo_file_perms` (+ `manage_fifo_file_perms`
 ;     under `fips_mode`, which is *on* on this box) → the fifo rule
 ;     below, which is the `manage` superset
@@ -587,8 +588,9 @@
 ;     `domain_can_mmap_files`, *off* on this box — so even mozilla_t
 ;     and mplayer_t don't get it; check with `getsebool`, the
 ;     sesearch `:True` annotation is the condition's polarity, not
-;     the value) → the file_type map rules below, scoped to
-;     `apse_app_t` alone
+;     the value) → deliberately *not* mirrored (dropped in v2.28 as
+;     too broad: `file_type` is the whole file class — revisit on a
+;     `map` denial; the self rule keeps `map` on our own files)
 ;   `fips_mode`: `kernel_read_kernel_sysctls` (a /proc/sys *content*
 ;     grant) is the block's only non-self rule and is deliberately
 ;     *not* mirrored — the v2.24 /proc design keeps content access
@@ -819,23 +821,21 @@
 ; metadata (fs type, size, free) — no content, so one attribute
 ; grant covers every mount the app may stat
 (allow apse_app_t filesystem_type (filesystem (getattr)))
-; mmap(2) is checked per *protection*: PROT_READ → `read`,
-; PROT_READ|PROT_WRITE → `read`+`write`, PROT_EXEC → `execute` — all
-; already granted on the file types the app reaches (document mmaps on
-; the state tree work: `apse_state_t:file` has `read`+`write`+`map`),
-; so the only missing case was `map` (PROT_NONE — a bare
-; address-space reservation) on the general file families. This is
-; exactly the body of the base's `domain_can_mmap_files` tunable
-; (`domain.te`), which is *off* on this box (getsebool) — scoping it
-; to `apse_app_t` alone is strictly narrower than the tunable would
-; be. And `map` alone is
-; content-free: a PROT_NONE mapping cannot be mprotect-ed to a usable
-; prot without the corresponding `read`/`write`/`execute` on the
-; target type, which stay per-type (LESSONS #68).
-(allow apse_app_t file_type (file (map)))
-(allow apse_app_t file_type (chr_file (map)))
-(allow apse_app_t file_type (blk_file (map)))
-(allow apse_app_t file_type (lnk_file (map)))
+; The broad `file_type:* map` grant that lived here (v2.25 — the
+; PROT_NONE case of the `domain_can_mmap_files` tunable; content-
+; free, but on the *whole file class*) was dropped in v2.28 as
+; too broad for the default position. A/B-verified inert on this
+; kernel: identical `mmap()` behavior with it present (v2.27) and
+; absent, zero new denials, and the v2.25 per-prot premise
+; (LESSONS #68) produced no denial where its model predicts one —
+; on this kernel file access is gated by `open()`. Revisit on an
+; *actual* `map` AVC — the likely source is a future
+; kernel/Fedora update: the vanilla 7.2.15 source does wire the
+; 7.2 replacement `mmap_file` hook (a `FILE__MAP` + per-prot
+; check) into the `mmap()` and `mremap` paths (LESSONS #71). The
+; per-type `map` grants (tmp_t, user_tmp_t, the state tree, the
+; self rule) stay — the `domain.te` shape, and they cover those
+; hook paths.
 (allow apse_app_t security_t (filesystem (getattr)))
 ; `ps` walks the /sys CPU/NUMA tree (/sys/devices/system/…) for the
 ; processor count: `open`/`read` for the enumeration, `search` for

@@ -2,20 +2,21 @@
 
 ## Status
 
-Current: **v2.27** (2026-11-13; enforcing, kernel 7.2.15). The SELinux
-module's app domain carries the base `domain` attribute's file-read
-set *as written* — `base_file_type` / `base_ro_file_type`, the basic
-types of the default installation (`etc_t`, `system_conf_t`,
-`etc_runtime_t`, `usr_t`, `bin_t`, `lib_t`, …) — read-only, exactly
-the least privilege an ordinary confined user domain has on those
-trees. The v2.26 first cut (`non_auth_file_type`, 3213 members) was
-deemed overly permissive and revised the same day. The dedicated /etc
-config types show `????` in a confined `ls -l /etc` again (45
-entries — accepted least-privilege trade; the app cannot use them
-anyway, and task 8.10's per-instance hosts/hostname/resolv.conf
-binds are the substantive fix for the five that matter). The
-v2.24/2.25 /proc closure is preserved (the /proc/sys content types
-are members of neither base set).
+Current: **v2.28** (2026-11-13; enforcing, kernel 7.2.15). The
+SELinux module's app domain carries the base `domain` attribute's
+file-read set *as written* on `base_file_type` /
+`base_ro_file_type` — read-only, the least privilege an ordinary
+confined user domain has on the basic trees of the default
+installation (the v2.26 first cut on `non_auth_file_type` was
+revised the same day, v2.27). The broad `file_type:* map` grant
+(v2.25) is dropped: too broad as a default position, and
+A/B-verified inert on this kernel — 7.2.15's plain `mmap()` path
+enforces neither `map` nor per-prot file permissions, so file
+access is gated by `open()`, exactly as the per-type rules already
+model (LESSONS #71). The dedicated /etc config types show `????` in
+a confined `ls -l /etc` (45 entries — accepted; task 8.10's
+per-instance hosts/hostname/resolv.conf binds are the substantive
+fix). The v2.24/2.25 /proc closure is preserved.
 
 Open: **6.4** (the varlink tier) — parked until a released systemd ships
 `PIDs` in scope contexts (re-checked 2026-11-04: v263 still in
@@ -40,6 +41,34 @@ completion *executing* the enumerated admin tools, the `find /` class,
 the metadata sweeps (`getfattr -R`; the python3 man readlink sweep).
 
 ### Change log (newest first)
+
+- **v2.28** (2026-11-13; enforcing): the broad `file_type:* map`
+  grant dropped (user's call: too broad as a default position —
+  `file_type` is the whole file class, and the only `domain`-side
+  precedent in the base policy is the *off* `domain_can_mmap_files`
+  tunable). Four rules gone (file/chr_file/blk_file/lnk_file `map`
+  on `file_type`); the per-type `map` grants (tmp_t, user_tmp_t,
+  the state tree) and the self rule's `map` stay. A/B-verified
+  **inert** on this kernel: the identical `mmap(2)` probe on the
+  same files behaves the same with the grant present (v2.27) and
+  absent, and the run adds zero new denials. That A/B is how the
+  investigation found the v2.25 / LESSONS-#68 premise ("mmap is
+  checked per protection; the only missing case is PROT_NONE →
+  `map`") **does not hold on kernel 7.2.15**: a private PROT_EXEC
+  `mmap` of an `etc_t` file by a domain with *neither* `execute`
+  nor `map` on the type succeeds with zero AVCs (the vanilla
+  7.2.15 source does define a replacement `mmap_file` hook with a
+  `FILE__MAP` + per-prot check, but the running 7.2.15-300.fc45
+  build does not fire it from the plain `mmap()` path — LESSONS
+  #71). Re-confirmed live what *does* gate file access: `open()`
+  (`file_permission` read/write) — an `O_RDWR` open of a `usr_t`
+  file by a domain without `open` on the type is denied. Practical
+  upshot: on this kernel the `map` permission is effectively
+  unenforced for ordinary app memory mapping; the revisit trigger
+  is a real `map` AVC (a future kernel/Fedora update that wires
+  the hook back in is the likely source). The v2.27 base-set read
+  grants and the 45-`????` `/etc` state are unaffected; no new
+  denials.
 
 - **v2.27** (2026-11-13; enforcing): revision of the v2.26 grant.
   `non_auth_file_type` (3213 members) was judged overly permissive —

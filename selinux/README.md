@@ -424,23 +424,39 @@ added are the ones a future denial is most likely to be:
   enforcing-mode tuning loop (a denial → a grant). Every
   self-grant is MCS-bounded in effect (a single-level `s0:cN`
   subject dominates only same-category objects).
-- **`map` is checked per *protection*, and the only missing case
-  was PROT_NONE (v2.25).** `mmap(2)` checks `read`/`write`/
-  `execute` against the mapping's prot bits — all already granted
-  on the file types the app reaches (document mmaps on the state
-  tree already worked: `apse_state_t:file` has `read`+`write`+
-  `map`) — so the only untested case was `map` itself (a
-  PROT_NONE address-space reservation) on the general file
-  families. That is exactly the body of the base's
-  `domain_can_mmap_files` tunable (`domain.te`), which is *off* on
-  this box (`getsebool` — not the sesearch `:True` annotation, which
-  is the condition's polarity) for all 934 `domain` members (even
-  `mozilla_t` and `mplayer_t` don't have it) — the grant is scoped
-  to `apse_app_t` alone, strictly narrower than the tunable. And
-  `map` alone is content-free: a PROT_NONE mapping
-  cannot be `mprotect`-ed to a usable prot without the
-  corresponding `read`/`write`/`execute` on the target type, which
-  stay per-type.
+- **The broad `file_type:* map` grant is dropped (v2.28): on this
+  kernel the plain `mmap()` path enforces no file permissions —
+  `open()` is the gate.** The v2.25 pass modeled `mmap(2)` on the
+  pre-7.2 `file_mmap` hook: checked per *protection* (`read`/
+  `write`/`execute` against the mapping's prot bits), with only
+  the PROT_NONE case (`map`) ungranted — the body of the base's
+  *off* `domain_can_mmap_files` tunable (`getsebool` is
+  authoritative; the sesearch `:True` annotation is the
+  condition's polarity) — and granted `map` on the whole
+  `file_type` family. The v2.28 A/B disproved that model on
+  kernel 7.2.15-300.fc45: with the grant toggled (module
+  reinstalled between), an identical probe behaved identically —
+  and a probe running as `apse_app_t` (confinement proven in the
+  same run: its `O_RDWR` open of a `usr_t` file is *denied*)
+  mmaps an `etc_t` file private with all four prots
+  (READ/WRITE/EXEC/NONE); all succeed with **zero AVCs** although
+  `apse_app_t` has none of `read`/`write`/`execute`/`map` on
+  `etc_t`. The grant was inert. (The vanilla 7.2.15 source does
+  wire the 7.2 replacement hook — `mmap_file`, a `FILE__MAP`
+  check plus `file_map_prot_check`, `security/selinux/hooks.c` —
+  into the `mmap()` and `mremap` paths, with `do_mmap` itself
+  carrying the "we assume access permissions have been handled by
+  the open" comment; the running Fedora build's observed behavior
+  differs, and the debug kernel package ships headers only, so
+  the running code cannot be diffed locally — LESSONS #71.) The
+  drop is a user call: too broad as a default position
+  (`file_type` is the whole file class; the only `domain`-side
+  precedent in the base is the *off* tunable). The per-type
+  `map` grants (tmp_t, user_tmp_t, the state tree, self) stay —
+  the `domain.te` shape, and they cover the paths the hook is
+  wired to in the vanilla source. Revisit the broad grant on an
+  *actual* `map` AVC — a future kernel/Fedora update that
+  re-enforces the check on the plain path is the likely source.
 - **Layering: the seccomp floor (decision #25) decides before
   SELinux, and one granted permission is unreachable on this
   kernel (v2.25).** The fifo `manage` set above includes `create`
@@ -453,7 +469,8 @@ added are the ones a future denial is most likely to be:
   exercises each grant directly (24 checks: getpcaps, a dup'd fd,
   sem/shm lifecycles incl. `SHM_LOCK`, inotify `watch`, `flock`,
   an `O_PATH` `getattr`/readlink, RW and PROT_NONE `mmap`s of
-  files, and `ioctl` via a *made-up* command number —
+  files (now known vacuous on this kernel — the `map` bullet),
+  and `ioctl` via a *made-up* command number —
   `security_file_ioctl` fires at syscall entry, at the top of
   `SYSCALL_DEFINE3(ioctl)`, before `do_vfs_ioctl` dispatch and any
   `FMODE_PATH`/command filtering, so it is the only way to

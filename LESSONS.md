@@ -1436,7 +1436,10 @@ write-up.
    escape surface, target = host→app, plus the neverallows and tunables)
    before joining; `domain` is the canonical case. — *the v2.25 completeness
    pass (2026-11-12, kernel 7.2.15, enforcing); a 24-point grant probe in a
-   live `apse run` (zero denials, the audit `denied` baseline flat).*
+   live `apse run` (zero denials, the audit `denied` baseline flat).
+   *Superseded in part (2026-11-13, v2.28): the per-prot premise
+   does not hold on the running 7.2.15-300.fc45 build — the A/B
+   that dropped the broad `file_type:* map` grant; #71.*
 69. **`id -Z` failing in the sandbox with "works only on an SELinux-enabled
    kernel" is a rootfs artifact, not a policy denial.** libselinux's
    "is the kernel SELinux-enabled" probe (what coreutils' `id --context`
@@ -1506,3 +1509,57 @@ write-up.
    the right tool for "does X grant on attribute A as written";
    for the reverse question ("does type T have attribute A?"),
    `seinfo -a <attr> -x` above remains the oracle.*
+
+71. **On kernel 7.2.15-300.fc45 the plain `mmap()` path enforces
+   no SELinux file permissions — `open()` is the gate — so the
+   v2.25/#68 per-prot premise (and the broad `file_type:* map`
+   grant it justified) is dead; the grant is dropped (v2.28).**
+   (Fedora 45, enforcing; A/B-verified 2026-11-13, kernel
+   7.2.15-300.fc45.) v2.25 modeled `mmap(2)` on the pre-7.2
+   `file_mmap` hook: checked per *protection* — `read`/`write`/
+   `execute` against the mapping's prot bits — with only the
+   PROT_NONE case (`map`) ungranted, i.e. the body of the base's
+   *off* `domain_can_mmap_files` tunable. The v2.28 A/B (module
+   reinstalled with the broad grant present, then absent, an
+   identical probe run both times) shows that model does not hold
+   on this kernel's running build: a probe running as
+   `apse_app_t` (confinement proven in the same run — its
+   `O_RDWR` open of a `usr_t` file is *denied*, the live
+   `file_permission` gate) mmaps an `etc_t` file private with all
+   four prots (READ/WRITE/EXEC/NONE); all succeed with **zero
+   AVCs**, although `apse_app_t` has none of `read`/`write`/
+   `execute`/`map` on `etc_t`, and the results are identical with
+   and without the broad grant — the grant was inert. The source
+   side, from the vanilla 7.2.15 tag (`497791a0a96b`, matching
+   this kernel's version): the old `file_mmap` hook is gone,
+   replaced by `mmap_file` (`selinux_mmap_file` →
+   `inode_has_perm(FILE__MAP)` + `file_map_prot_check`,
+   `security/selinux/hooks.c`), and `do_mmap` carries the comment
+   "we assume access permissions have been handled by the open of
+   the memory object, so we don't do any here" — but the tag
+   *does* call `security_mmap_file` from `vm_mmap_pgoff` (the
+   x86-64 `mmap()` path, `mm/util.c`) and from the `mremap` path
+   (`mm/mmap.c`), which the running build's observed behavior
+   contradicts. The Fedora debug kernel package ships headers
+   only (no `.c` files), so the running code cannot be diffed
+   locally: treat "this build does not enforce `map` (or the
+   per-prot set) on the plain `mmap()` path" as the observed
+   fact, with the vanilla wiring as the open question (a Fedora
+   mm/LSM patch, or the probe not hitting the check's path, would
+   each explain it). Practical upshot: on this kernel file
+   access is gated by `open()` (`file_permission` read/write),
+   exactly as the per-type rules model; the per-type `map`
+   grants (tmp_t, user_tmp_t, the state tree, self) stay — the
+   `domain.te` shape, and they cover the paths the hook is wired
+   to in the vanilla source (`mremap`, the backing-file check,
+   `mprotect`); the revisit trigger for the broad grant is an
+   *actual* `map` AVC (a future kernel/Fedora update that
+   re-enforces the check on the plain path is the likely
+   source). A probe trap from the investigation:
+   `vm.mmap_min_addr` (65536 on this box) shadows the
+   `mmap_addr` hook — a low-address `MAP_FIXED` probe fails the
+   VFS threshold check first (a zero-AVC `EPERM`, not a denial),
+   so it is a useless canary for that check. — *v2.28
+   (2026-11-13, kernel 7.2.15-300.fc45, enforcing): the A/B
+   behind the broad-grant drop; the open detail is
+   vanilla-vs-Fedora wiring of the 7.2 `mmap_file` hook.*
