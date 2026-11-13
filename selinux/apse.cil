@@ -847,13 +847,10 @@
 ; single-level `s0:cN` subject dominates only objects at the same
 ; category, so it never reaches another instance's processes
 (allow apse_app_t apse_app_t (dir (ioctl)))
-(allow apse_app_t var_run_t (dir (getattr search)))
 (allow apse_app_t selinux_config_t (dir (getattr search)))
 (allow apse_app_t selinux_config_t (file (getattr open read)))
 (allow apse_app_t cgroup_t (dir (getattr open search read)))
 (allow apse_app_t cgroup_t (file (getattr open read)))
-(allow apse_app_t etc_t (dir (getattr open search read)))
-(allow apse_app_t etc_t (file (getattr open read)))
 ; v2.26 (the `????` fix, revised the same day): a confined
 ; `ls -l /etc` showed `d??????????` / `l??????????` for ~42
 ; entries. Their inodes carry the base policy's *dedicated*
@@ -916,7 +913,6 @@
 (allow apse_app_t base_file_type (lnk_file (getattr read)))
 (allow apse_app_t base_ro_file_type (dir (ioctl lock read)))
 (allow apse_app_t base_ro_file_type (file (getattr ioctl lock open read)))
-(allow apse_app_t root_t (dir (search)))
 (allow apse_app_t home_root_t (dir (getattr open read search)))
 (allow apse_app_t user_home_dir_t (dir (getattr open search read)))
 (allow apse_app_t user_home_t (dir (create getattr open search read write add_name remove_name)))
@@ -981,22 +977,16 @@
 ; fish's completion system enumerates /usr/bin and /bin to list
 ; the available commands: `open` for the `opendir` call, `read`
 ; (readdir) for the enumeration
-(allow apse_app_t bin_t (dir (getattr open read search)))
-(allow apse_app_t bin_t (lnk_file (getattr read)))
 ; the same completion then stats *every enumerated entry*: Fedora
 ; labels most of /usr/bin/* and /usr/libexec/* with per-purpose
 ; exec types (lvm_exec_t, iptables_exec_t, systemd_systemctl_exec_t,
-; …), not `bin_t`, so the `bin_t` grant above reaches only the rest
-; — the `exec_type` attribute (every `*_exec_t`) is the complete
-; target. `getattr` (stat) on the files; on the symlinks among them
-; `getattr` + `read` (readlink is a separate check on this kernel)
+; …) that sit in *neither* base set, so the base-set grant above
+; reaches only the base-set-labelled entries — the `exec_type`
+; attribute (every `*_exec_t`) is the complete target. `getattr`
+; (stat) on the files; on the symlinks among them `getattr` +
+; `read` (readlink is a separate check on this kernel)
 (allow apse_app_t exec_type (file (getattr)))
 (allow apse_app_t exec_type (lnk_file (getattr read)))
-; `read` (readdir) covers fontconfig's enumeration of the
-; conf.d-style dirs under /usr/share (conf.avail) — a plain
-; stat (getattr) cannot list their entries.
-(allow apse_app_t usr_t (dir (getattr open read search)))
-(allow apse_app_t usr_t (lnk_file (read)))
 ; fontconfig's directory scans: the system tree and the user's
 ; `~/.local/share/fonts`; `$XDG_DATA_HOME` enumeration stats every
 ; subdirectory, including flatpak_home_t. `cpu_online_t` is
@@ -1028,8 +1018,6 @@
 (allow apse_app_t user_fonts_cache_t (file (getattr open read map)))
 (allow apse_app_t flatpak_home_t (dir (getattr search read)))
 (allow apse_app_t cpu_online_t (file (getattr open read)))
-(allow apse_app_t lib_t (lnk_file (read)))
-(allow apse_app_t etc_t (lnk_file (read)))
 ; `open`/`read`: `ls /` — `open(2)` on a directory is checked
 ; against `dir:open` (the same trap as the fontconfig dirs,
 ; LESSONS #35: a `read`-only grant still fails the open), and the
@@ -1060,14 +1048,6 @@
 ; ls formatting mtimes: tzset reads /etc/localtime, a symlink
 ; (labeled locale_t, not etc_t) into the zoneinfo tree
 (allow apse_app_t locale_t (lnk_file (read)))
-; the lib dirs: import mechanisms (python) stat, open *and*
-; enumerate (readdir) the search-path directories — a FileFinder
-; opens a dir to list its contents and resolve a submodule, so
-; enforcing mode needs `open` and `read` here, not just
-; `getattr`/`search` (the open() path checks both: inode_permission
-; first, then the file_open hook)
-(allow apse_app_t lib_t (dir (getattr open read search)))
-(allow apse_app_t lib_t (lnk_file (read)))
 ; /proc/sys: platform/runtime introspection (read-only; the values
 ; are kernel-constant, not instance data)
 (allow apse_app_t sysctl_t (dir (getattr search)))
@@ -1096,7 +1076,6 @@
 ; trust data
 (allow apse_app_t cert_t (dir (getattr open read search)))
 (allow apse_app_t cert_t (file (getattr open read)))
-(allow apse_app_t usr_t (dir (search)))
 ; VFS superblock objects are stat'd during path lookup on some
 ; mount types (`filesystem getattr`)
 (allow apse_app_t fs_t (filesystem (getattr)))
