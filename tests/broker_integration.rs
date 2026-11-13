@@ -17,6 +17,7 @@
 //! 5. decides with nothing to resolve are refused with a reason.
 
 use std::io::Write as _;
+use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -67,6 +68,10 @@ fn wait_for_file(path: &Path) {
 fn spawn_broker(xdg: &TempDir, timeout_ms: u64) -> Broker {
     let dir = xdg.path();
     std::fs::create_dir_all(dir).unwrap();
+    // The broker validates its runtime dir through the XDG spec
+    // (the daemon's decision socket is user-private by design):
+    // the dir must be 0700, and tempfile's default is 0755.
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_apse"))
         .args([
             "broker",
