@@ -348,10 +348,13 @@ fn run_broker(args: &BrokerArgs) -> Result<()> {
     // post-re-exec invocation hits the loop guard (already `s0`).
     // No-op in unconfined mode.
     apse::mcs::self_reexec_to_s0()?;
-    let xdg = std::env::var("XDG_RUNTIME_DIR").context(
-        "XDG_RUNTIME_DIR must be set: the broker keeps its decision \
-         socket in $XDG_RUNTIME_DIR/apse",
-    )?;
+    let xdg = xdg::BaseDirectories::new()
+        .get_runtime_directory()
+        .with_context(|| {
+            "XDG_RUNTIME_DIR must be set: the broker keeps its decision \
+             socket in $XDG_RUNTIME_DIR/apse"
+        })?
+        .clone();
     let listener = if args.socket_activation {
         apse::broker::take_activated_socket().with_context(|| {
             "no socket was received via systemd socket activation (LISTEN_FDS is not set \
@@ -370,7 +373,7 @@ fn run_broker(args: &BrokerArgs) -> Result<()> {
     };
     sd_notify_ready();
     let broker_args = apse::broker::BrokerArgs {
-        runtime_dir: path::PathBuf::from(xdg).join("apse"),
+        runtime_dir: xdg.join("apse"),
         auto_decide: args.auto_decide.as_deref().and_then(|s| {
             // validate() already rejected a bad value.
             apse::broker::parse_decision(s).ok().map(|d| match d {
@@ -390,13 +393,14 @@ fn run_broker(args: &BrokerArgs) -> Result<()> {
 /// With it: resolve the oldest pending prompt, or the one `--prompt`
 /// names.
 fn run_decide(args: &DecideArgs) -> Result<()> {
-    let xdg = std::env::var("XDG_RUNTIME_DIR").context(
-        "XDG_RUNTIME_DIR must be set: the broker's decision socket \
-         lives in $XDG_RUNTIME_DIR/apse",
-    )?;
-    let socket = path::PathBuf::from(xdg)
-        .join("apse")
-        .join(apse::broker::DECISION_SOCKET);
+    let xdg = xdg::BaseDirectories::new()
+        .get_runtime_directory()
+        .with_context(|| {
+            "XDG_RUNTIME_DIR must be set: the broker's decision socket \
+             lives in $XDG_RUNTIME_DIR/apse"
+        })?
+        .clone();
+    let socket = xdg.join("apse").join(apse::broker::DECISION_SOCKET);
 
     let listing = args.decision.is_none();
     let request = if listing {
