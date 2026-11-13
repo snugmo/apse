@@ -738,12 +738,19 @@
 (allow apse_app_t apse_app_t (fifo_file (getattr ioctl read write)))
 (allow apse_app_t apse_app_t (tcp_socket (create getattr name_bind connect read write getopt setopt)))
 (allow apse_app_t apse_app_t (udp_socket (create getattr name_bind connect read write getopt setopt)))
-(allow apse_app_t null_device_t (chr_file (open read write getattr ioctl)))
-(allow apse_app_t urandom_device_t (chr_file (open read write getattr ioctl)))
-(allow apse_app_t random_device_t (chr_file (getattr)))
-(allow apse_app_t zero_device_t (chr_file (getattr)))
+; the standard /dev nodes the build binds in (the bind keeps their
+; genfs labels — `null_device_t` covers both /dev/null and
+; /dev/full): the app's stdio and entropy plumbing. The profiles
+; mimic the base policy's user-session grants: the `domain` set
+; for null/zero/urandom/tty; the usertype-only read set for
+; /dev/random. `write` on /dev/urandom is not in the base set
+; (the `domain` grant is read-only), so it is dropped
+(allow apse_app_t null_device_t (chr_file (append getattr ioctl lock open read write)))
+(allow apse_app_t urandom_device_t (chr_file (getattr ioctl lock open read)))
+(allow apse_app_t random_device_t (chr_file (getattr ioctl lock open read)))
+(allow apse_app_t zero_device_t (chr_file (append getattr ioctl lock map open read write)))
 (allow apse_app_t ptmx_t (chr_file (open read write getattr ioctl)))
-(allow apse_app_t devtty_t (chr_file (open read write getattr ioctl)))
+(allow apse_app_t devtty_t (chr_file (append getattr ioctl lock open read write)))
 ; the sandbox's `/dev/ptmx` is a relative symlink into the fresh
 ; devpts instance (the build's step 5, decision #39), so the symlink
 ; itself carries the fresh tmpfs's default label (tmpfs_t), not
