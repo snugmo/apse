@@ -1009,13 +1009,15 @@
 ; the same completion then stats *every enumerated entry*: Fedora
 ; labels most of /usr/bin/* and /usr/libexec/* with per-purpose
 ; exec types (lvm_exec_t, iptables_exec_t, systemd_systemctl_exec_t,
-; …) that sit in *neither* base set, so the base-set grant above
-; reaches only the base-set-labelled entries — the `exec_type`
-; attribute (every `*_exec_t`) is the complete target. `getattr`
-; (stat) on the files; on the symlinks among them `getattr` +
-; `read` (readlink is a separate check on this kernel)
+; …) that sit in *neither* base set, so the base-set grants reach
+; only the base-set-labelled entries (`bin_t`, `shell_exec_t`).
+; The symlinks among them are covered by the
+; `non_security_file_type` `lnk_file` grant (every `exec_type`
+; member is in the attribute — seinfo-verified); the regular
+; files need this explicit `file:getattr` — no attribute grant
+; in this module reaches the `file` class (readlink is a
+; separate check on this kernel)
 (allow apse_app_t exec_type (file (getattr)))
-(allow apse_app_t exec_type (lnk_file (getattr read)))
 ; fontconfig's directory scans: the system tree and the user's
 ; `~/.local/share/fonts`; `$XDG_DATA_HOME` enumeration stats every
 ; subdirectory, including flatpak_home_t. `cpu_online_t` is
