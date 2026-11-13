@@ -700,6 +700,7 @@ mod tests {
             gpu: false,
             profile: crate::profile::Profile::adhoc(),
             wayland: None,
+            debug: false,
         }
     }
 

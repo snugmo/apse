@@ -638,6 +638,42 @@
 (allow apse_t dri_device_t (chr_file (open read write getattr)))
 (allow apse_t device_t (dir (getattr open search read)))
 (allow apse_app_t apse_app_t (process (fork getcap getattr signal sigkill signull sigstop getsched getsession getrlimit setpgid setcurrent setexec setfscreate setkeycreate setsockcreate noatsecure rlimitinh siginh sigchld)))
+; task 8.7: in-sandbox debugging, the confined-mode half of the
+; two-layer gate. The per-sandbox half is seccomp (B installs a
+; second, stacked filter that rejects `ptrace` for every non-debug
+; run — invisible to SELinux, per-run by construction); this
+; boolean is the global master switch a root sets once for the
+; box (`setsebool -P apse_app_ptrace on`), read unprivileged by
+; `apse run --debug` before it builds anything. AND semantics: a
+; run can ptrace only when *its* `--debug` removed the seccomp
+; gate AND the boolean grants the permission here. Self-grant
+; only: the debugger (strace/gdb) execs into `apse_app_t` like its
+; target, so one subject type covers both ends — and the base
+; `mlsconstrain` then limits the attach to the run's *own* MCS
+; category (another instance's `cN` is incomparable, denied
+; regardless of the boolean).
+; NOTE (LESSONS #79): this libsepol (3.11) CIL reader does not
+; take the TE boolean syntax. `gen_bool`/`if` are "Unknown
+; keyword"; the CIL forms are `(boolean NAME true|false)` and
+; `(booleanif NAME ( true <statements…> ))` — the condition is
+; the bare boolean *name* (wrapping it in `(boolean …)` makes
+; the reader resolve a boolean literally named `boolean` and
+; fail at the resolve pass), and the body's first child must be
+; the bare `true`/`false` keyword (a `(true …)` group fails
+; `cil_verify_conditional_blocks`, which compares the block's
+; first *child* against the keyword).
+(boolean apse_app_ptrace false)
+(booleanif apse_app_ptrace (
+  true
+  (allow apse_app_t apse_app_t (process (ptrace)))
+))
+; The supervisor-side read: `apse run --debug` (still `apse_t`, on the
+; host) reads the boolean via /sys/fs/selinux/booleans/apse_app_ptrace
+; before building anything. selinuxfs is labelled `security_t`, so the
+; traversal + read grants go to `apse_t` itself (the app-side
+; self-grant above is what the *debugger* inside the sandbox gets).
+(allow apse_t security_t (dir (search getattr)))
+(allow apse_t security_t (file (open read getattr)))
 (allow apse_app_t apse_app_t (dir (create getattr open search read watch add_name remove_name rmdir lock ioctl)))
 (allow apse_app_t apse_app_t (file (append create entrypoint execute execute_no_trans getattr map open read write unlink lock ioctl)))
 ; Completeness pass (v2.25): the *entire* base `domain.te` self-grant

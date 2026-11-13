@@ -47,7 +47,7 @@
 //! the current label is not `apse_t`) every function here is a
 //! no-op and the historical behavior stands.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io;
 
 /// The categories available in the user's `s0-s0:c0.c1023` range.
@@ -93,6 +93,50 @@ fn parse_label(s: &str) -> Option<(String, String, String, String)> {
 /// `apse_t` (the binary carries `apse_exec_t`).
 pub fn is_confined() -> bool {
     current_label().is_some_and(|l| l.2 == "apse_t")
+}
+
+/// Task 8.7: the module's `apse_app_ptrace` boolean (the SELinux
+/// half of the in-sandbox debugging gate). Readable unprivileged —
+/// `/sys/fs/selinux/booleans/` is world-readable. `None` when
+/// selinuxfs is absent (SELinux disabled) or the boolean is not in
+/// the loaded policy (module uninstalled, or older than the v2.33
+/// that introduced it).
+///
+/// The file holds `<value> <state>` (the current value and the
+/// "persisted" flag, space-separated) — not a bare digit — so the
+/// first field is what counts.
+pub fn ptrace_boolean() -> Option<bool> {
+    let s = std::fs::read_to_string("/sys/fs/selinux/booleans/apse_app_ptrace").ok()?;
+    Some(s.split_whitespace().next() == Some("1"))
+}
+
+/// The `--debug` fail-fast gate (task 8.7). SELinux has no
+/// per-invocation policy — the boolean is the *global* master
+/// switch of the SELinux layer (toggling it is root-only: an
+/// unprivileged `setsebool` is `EACCES`); the *per-sandbox* gate
+/// is the seccomp filter (`run --debug` skips the ptrace-deny
+/// filter for that run only). Both layers must pass (AND).
+///
+/// In unconfined mode (no module, no boolean) the flag stands on
+/// the seccomp gate alone, so this is a no-op. In confined mode
+/// with the boolean off (or the module too old to carry it),
+/// calling this *before* the sandbox is built turns a would-be
+/// denial at first `ptrace` into an early, actionable error.
+pub fn require_ptrace_boolean() -> Result<()> {
+    if !is_confined() {
+        return Ok(());
+    }
+    match ptrace_boolean() {
+        Some(true) => Ok(()),
+        Some(false) => bail!(
+            "--debug requires the SELinux boolean apse_app_ptrace (currently off); \
+             as root: setsebool -P apse_app_ptrace on"
+        ),
+        None => bail!(
+            "--debug: the apse_app_ptrace boolean is not in the loaded SELinux \
+             policy (is the installed apse module up to date?)"
+        ),
+    }
 }
 
 /// Write the process' exec context (the setexecfilecon equivalent).

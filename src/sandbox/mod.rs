@@ -62,6 +62,13 @@ pub(crate) struct SandboxConfig {
     pub gpu: bool,
     /// The tagged Wayland socket (Phase 5.1); `None` = none.
     pub wayland: Option<WaylandSpec>,
+    /// In-sandbox debugging (task 8.7): when `false` (the
+    /// default) B installs a second seccomp filter that rejects
+    /// `ptrace(2)` for the whole run — the per-sandbox debugger
+    /// gate; when `true` `ptrace` is left to the remaining layers
+    /// (the `apse_app_ptrace` SELinux boolean in confined mode,
+    /// DAC/yama in baseline).
+    pub debug: bool,
 }
 
 /// Run `command` inside the full namespace set, as our real uid
@@ -479,7 +486,7 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
                         let caps =
                             policy::capability_set(config, std::path::Path::new(&sandbox_runtime))
                                 .context("building the app's capability set")?;
-                        let notify = policy::apply(&caps)
+                        let notify = policy::apply(&caps, !config.debug)
                             .context("installing the seccomp-notify filter + Landlock floor")?;
                         // Hand the listener up to the supervisor
                         // (decision #23): B's own `sendmsg` is trapped,
@@ -1545,6 +1552,7 @@ mod tests {
                 socket_activation: false,
                 sandbox_engine: "apse-test".to_string(),
             }),
+            debug: false,
         }
     }
 
@@ -1726,6 +1734,7 @@ print('CONNECT-OK')";
                             profile: crate::profile::Profile::adhoc(),
                             gpu: false,
                             wayland: None,
+                            debug: false,
                         })
                     ),
                 );
@@ -1733,6 +1742,7 @@ print('CONNECT-OK')";
             },
             gpu: false,
             wayland: None,
+            debug: false,
         };
         let host_marker = format!("{}/ready", mounts::instance_runtime_dir(&config));
         let _ = std::fs::remove_dir_all(mounts::instance_runtime_dir(&config));
@@ -1809,6 +1819,7 @@ print('CONNECT-OK')";
             profile: crate::profile::Profile::adhoc(),
             gpu: false,
             wayland: None,
+            debug: false,
         };
         assert!(
             !std::path::Path::new(&mounts::instance_runtime_dir(&config)).exists(),
@@ -1854,6 +1865,7 @@ print('CONNECT-OK')";
             profile: crate::profile::Profile::adhoc(),
             gpu: false,
             wayland: None,
+            debug: false,
         };
         let command = vec![OsString::from("/bin/true")];
         let sock_str = sock_path.to_string_lossy().into_owned();

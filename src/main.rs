@@ -65,6 +65,15 @@ fn main() -> Result<()> {
         // `run`: exec the command inside the sandbox and exit with
         // its exit code.
         Command::Run(args) => {
+            // Task 8.7: `--debug` in confined mode also requires
+            // the module's `apse_app_ptrace` boolean (SELinux has
+            // no per-invocation policy — the boolean is the global
+            // master switch, the per-sandbox gate is the seccomp
+            // filter this flag skips). Fail fast, before the
+            // sandbox is built; a no-op in unconfined mode.
+            if args.debug {
+                apse::mcs::require_ptrace_boolean()?;
+            }
             // The app profile (TOML file, then built-in, then the
             // ad-hoc default — a malformed file is a hard error).
             let profile = match profile::load(&args.app_id)? {
@@ -98,6 +107,7 @@ fn main() -> Result<()> {
                 profile,
                 gpu,
                 wayland,
+                debug: args.debug,
             };
             let code = sandbox::run_sandboxed(&args.command, &config)?;
             info!("Sandboxed command exited with {code}");

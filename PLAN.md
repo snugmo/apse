@@ -2,7 +2,32 @@
 
 ## Status
 
-Current: **v2.32** (2026-11-13; enforcing, kernel 7.2.15).
+Current: **v2.33** (2026-11-13; enforcing, kernel 7.2.15).
+Task 8.7 — in-sandbox debugging, a **two-layer gate** (SELinux
+has no per-invocation policy, so the layers split what each can
+express): **(1) per-sandbox, default on** — B installs a second
+stacked classic-BPF seccomp filter *after* nono's notify filter
+(LIFO: evaluated first; `SECCOMP_RET_ALLOW` for everything except
+`ptrace` → `EPERM`); `run --debug` skips the install for that one
+run (`Seccomp_filters: 2` → `1`). **(2) global, default off** — a
+new CIL boolean `apse_app_ptrace` gates the `apse_app_t`
+**self**-grant `(process (ptrace))` (a self-grant: the debugger
+execs into `apse_app_t` exactly like its target); the toggle is
+root-only (`setsebool -P`), the read is unprivileged — and the MCS
+`cN` (per-instance) bounds the grant to the run's own process
+tree. **AND semantics:** both must pass. `run --debug` in
+confined mode fail-fasts on a pre-build boolean read (the
+selinuxfs boolean file is two fields, `<value> <state>`; `apse_t`
+got the `security_t` `search`/`read` grants to make the read
+possible). Verified: boolean off — baseline unchanged, `--debug`
+gives a clear error; boolean on + `--debug` — `strace` (both the
+fork+exec `TRACEME` and the `-p` `ATTACH` paths) and `gdb` on a
+small C target, all with zero denials; boolean on without
+`--debug` — still denied (the layers are independent); host-side
+`strace -p`/`gdb -p` from unconfined unaffected (the user's
+clearance dominates any `cN`); cross-instance still closed
+(different `cN` + disjoint pidns).
+Underneath: **v2.32** (2026-11-13; enforcing, kernel 7.2.15).
 Task 8.8 — the dedicated-type exec world (the `ip`/`hostname`
 denial class): the exec grants target the base
 **`application_exec_type`** attribute (a refinement of the
@@ -56,9 +81,7 @@ Open: **6.4** (the varlink tier) — parked until a released systemd ships
 `PIDs` in scope contexts (re-checked 2026-11-04: v263 still in
 development; Fedora 45's 262.1 has no user-bus varlink socket);
 **8.6** (a per-invocation `--no-selinux` flag) — the root-only,
-persistent file-relabel escape as a CLI knob; **8.7** (in-sandbox
-debugging: a boolean-gated `ptrace` grant + `debug` profile/flag) —
-gdb/strace inside a confined run. Deferred denial
+persistent file-relabel escape as a CLI knob. Deferred denial
 classes (user's call, accepted — not sandbox use cases): fish's
 completion *executing* the enumerated *daemon/init* admin tools
 (the v2.32 `application_exec_type` grant covers the dedicated
@@ -1578,73 +1601,49 @@ audited as a write).
       (regression guard); (c) the re-exec fires exactly once.
       CI is unaffected — the test-suite binary is unrelabeled, so
       the flag is a no-op there.
-- [ ] 8.7 *(future)* In-sandbox debugging: a boolean-gated `ptrace`
-      grant (`apse_app_ptrace`, off by default) + a `debug`
-      profile/flag that validates it: run gdb/strace *inside* a
-      confined run, debugging processes within the same instance.
-      **The denial (audit-verified, v2.25 enforcing):** a debugger
-      running as the app is refused `ptrace` on the process it
-      wants to debug — five denials from strace and gdb, all
-      `scontext = tcontext = apse_app_t:s0:c1007`, `tclass=process`,
-      `permissive=0` — i.e. a missing **self**-grant: the v2.25
-      mirror of `domain`'s self-grants omits `process:ptrace`
-      because the base `domain` does not ptrace itself. **The split
-      that matters:** *host-side* debugging already works —
-      `unconfined_t → apse_app_t` carries `ptrace` (the "user can
-      trace" line) and `strace -p` / `gdb -p` from an unconfined
-      shell attach cleanly (verified live, 2026-11-13) — so 8.7
-      only concerns the *in-sandbox* debugger.
-      **Mechanism — a boolean, because SELinux has no per-
-      invocation policy.** Policy is global kernel state; a per-
-      invocation *grant* is impossible (as with 8.6, `apse_t` is a
-      property of the file, not of a run). So: `gen_bool
-      apse_app_ptrace false` plus the self-grant `(allow
-      apse_app_t apse_app_t (process (ptrace)))` inside `(if
-      (boolean apse_app_ptrace) …)`. **The toggle is root-only:**
-      `setsebool` as a regular user fails EACCES (verified
-      2026-11-13 — `unconfined_t` has no `boolean:write`), so the
-      toggle is `setsebool -P apse_app_ptrace on` by root — the
-      "setsebool option" from the bug report, but persistent and
-      system-wide. An unconditional (un-gated) grant is
-      defensible — the self-grant is MCS-bounded in effect (module
-      note near the self-grant block): the only processes sharing
-      the app's `cN` are its own tree in the *same* instance, so it
-      cannot reach other instances, the supervisor (`apse_t`), or
-      the host — but default-off + boolean keeps "least by
-      default" and gives an off switch.
-      **Per-invocation UX (flag/profile, grants nothing):** a
-      `debug = true` profile key or `--debug` flag that (a) reads
-      the boolean (unprivileged — it is a file read) and fails
-      fast with a clear message if it is off, and (b) records in
-      the profile that the entry command is a debugger.
-      **Usage is same-instance by construction:** the debugger is
-      the app (`apse run -- gdb ./target` — it forks+execs and
-      ptraces its own child) or attaches within one instance
-      (`apse run -- sh -c 'app & strace -p $!'`); a *separate*
-      instance cannot debug another (different `cN`, MCS blocks —
-      by design; use the host-side path).
-      **Expected scope of the grant:** `process:ptrace` alone may
-      close it — the `/proc/<pid>` tree carries the *target's* own
-      context on this kernel (LESSONS #45, module note), so a
-      debugger's reads of the target's `mem` / `maps` / `cmdline`
-      are checks against `apse_app_t` self, which the existing file
-      self-grants cover (`open` / `read` / `map`). The tuning loop
-      (zero-denial goal) decides anything more. The same audit run
-      also showed one `netlink_audit_socket: create` denial from a
-      shell — do **not** grant by default (an app reading the
-      audit log can observe other processes' denials); revisit only
-      if a legitimate app needs it.
-      **Verify** (target machine, confined binary, enforcing):
-      (a) boolean off: in-sandbox strace/gdb denied as today
-      (baseline unchanged); (b) boolean on: `gdb` on a small C
-      target and `strace` on an in-instance child attach/detach
-      cleanly — zero denials across the whole debug session;
-      (c) cross-instance: a debugger in instance A against a
-      process in instance B — still denied (MCS intact);
-      (d) host-side `strace -p` unaffected; (e) a normal run
-      (boolean off, no debugger) — zero denials, no behavior
-      change. Document in `selinux/README.md` (Operating modes →
-      debugging) and in AGENTS.md.
+- [x] 8.7 In-sandbox debugging (2026-11-13, v2.33): a two-layer
+      gate, because SELinux has no per-invocation policy (the type
+      is a property of the file, not of a run — same split as 8.6).
+      **As implemented:** (1) *per-sandbox, default on*: B installs
+      a second stacked classic-BPF seccomp filter *after* nono's
+      notify filter (filters evaluate newest-first, so it is
+      checked first; `SECCOMP_RET_ALLOW` for everything except
+      `ptrace` → `EPERM`) — `run --debug` skips the install for
+      that one run (`Seccomp_filters: 2` → `1` in
+      `/proc/self/status`; the X32 guard bit lives in the syscall
+      *number*, not the arch — LESSONS #80). (2) *global, default
+      off*: a new CIL boolean `apse_app_ptrace` gates the
+      `apse_app_t` **self**-grant `(process (ptrace))` — a
+      self-grant because the debugger (strace/gdb) execs into
+      `apse_app_t` exactly like its target — and the per-instance
+      MCS `cN` bounds it to the run's own process tree (a single
+      category is incomparable with any other; the base
+      mlsconstrain on `process:ptrace` denies cross-category, and
+      disjoint PID namespaces make the target invisible anyway).
+      **AND semantics:** a debug run needs *its* `--debug` to have
+      removed the seccomp gate *and* the boolean on. The toggle is
+      root-only (`setsebool -P` — an unprivileged `setsebool` is
+      `EACCES`); the read is unprivileged (a file read on
+      selinuxfs, `<value> <state>` — two fields), and `run
+      --debug` in confined mode fail-fasts on it **before**
+      building anything (a would-be first-`ptrace` denial becomes
+      an early, actionable error); `apse_t` needed its own
+      `security_t` `search`/`read` grants to make the read
+      possible (LESSONS #79). **Verified (enforcing, 7.2.15):**
+      (a) boolean off — baseline unchanged (2 filters, `ptrace`
+      EPERM, zero denials) and `--debug` fails fast with the
+      correct message; (b) boolean on + `--debug` — `strace` on
+      its own child (fork+exec `TRACEME`), `strace -p` on an
+      in-instance child (`ATTACH`), and `gdb` running a small C
+      target — all attach/detach with **zero denials**; (c)
+      boolean on *without* `--debug` — still denied (the layers
+      are independent); (d) host-side `strace -p` from unconfined
+      unaffected (attach + clean detach, zero denials — the
+      "user can trace" line); (e) cross-instance: two live
+      instances ran different `cN`s (`c311`/`c746`) — MCS intact
+      (the `signull` kill-0 gap, LESSONS #33, is unchanged).
+      Documented in `selinux/README.md` ("In-sandbox debugging")
+      and AGENTS.md.
 - [x] 8.8 Dedicated-type exec grant — the `hostname` / `ip`
       denial class (2026-11-13, v2.32): stop chasing the
       distribution's per-binary exec labels. **As implemented

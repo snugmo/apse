@@ -172,6 +172,15 @@ pub(crate) struct RunArgs {
     /// (`wp_security_context_v1.set_sandbox_engine`)
     #[arg(long, default_value = "apse")]
     pub(crate) sandbox_engine: String,
+    /// Allow in-sandbox debugging: let this run's process tree
+    /// call `ptrace(2)` (gdb / strace). Default off — without it
+    /// apse installs a second seccomp filter that rejects
+    /// `ptrace` for this run only (other runs, and host-side
+    /// debuggers, are unaffected). In confined mode this
+    /// additionally requires the module's `apse_app_ptrace`
+    /// SELinux boolean (root: `setsebool -P apse_app_ptrace on`)
+    #[arg(long)]
+    pub(crate) debug: bool,
     /// Command and its arguments, run inside the sandbox
     /// (everything after `--`; e.g. `apse run -- /bin/sh -c 'id'`)
     #[arg(trailing_var_arg = true, required = true)]

@@ -1687,3 +1687,51 @@ write-up.
    socket operation is self-targeted and therefore MCS-bounded, like
    any other self-grant; the app can only ever touch sockets it
    created. — *task 8.8 (v2.32); `selinux/apse.cil`.*
+
+79. **This libsepol (3.11) CIL reader does not take the TE boolean
+   syntax — and selinuxfs boolean files hold two fields, not one.**
+   `gen_bool`/`if` are rejected as "Unknown keyword"; the CIL forms
+   are `(boolean NAME true|false)` (declaration) and
+   `(booleanif NAME ( true <statements…> ))` (conditional) — the
+   condition is the *bare* boolean name (wrapping it in
+   `(boolean …)` makes the reader resolve a boolean literally named
+   `boolean` and fail at the resolve pass) and the body's first
+   child must be the *bare* `true` keyword (a `(true …)` group node
+   fails `cil_verify_conditional_blocks`, which compares the first
+   child's string against the keyword, not the group). The reading
+   side has its own trap: `/sys/fs/selinux/booleans/<name>` holds
+   `<value> <state>` — the value and a "persisted" flag,
+   space-separated — so a `s.trim() == "1"` reader misreads an *on*
+   boolean as off (it was, in fact, off-as-read in both states
+   until caught by a fail-fast message that could not be right).
+   Last: a confined supervisor that wants to read *its own module's*
+   boolean needs explicit grants, because selinuxfs is labelled
+   `security_t` — `apse_t` got `dir { search getattr }` and
+   `file { open read getattr }`; without the `search` the `open`
+   fails `ENOENT` and the reader silently degrades to the wrong
+   error message ("boolean not in the loaded policy" instead of
+   "boolean is off"). — *task 8.7 (v2.33); `selinux/apse.cil`,
+   `src/mcs.rs`.*
+
+80. **A per-sandbox seccomp gate is a second stacked classic-BPF
+   filter, with three sharp edges in its BPF.** (a) The X32 marker
+   bit (`0x40000000`) lives in the syscall *number* field, not the
+   arch field: `syscall_get_arch()` on x86 always returns the native
+   audit arch for both native-64 and X32 tasks, so a guard that
+   loads `arch` and compares against the X32 bit treats *every*
+   native 64-bit syscall as X32 and bricks the process — the guard
+   must load `nr` and mask the bit (nono's own arch guard does
+   exactly this; its source is the reference). (b) `SECCOMP_SET_MODE_FILTER`
+   requires `PR_SET_NO_NEW_PRIVS` or `CAP_SYS_ADMIN`
+   (kernel `seccomp.c`) — an unprivileged test child that installs
+   its own filter must set NNPS first, or it dies inside the
+   install before it can report anything (a silent EOF on the test
+   pipe is the symptom). (c) Only *one* filter per process may use
+   `SECCOMP_FILTER_FLAG_NEW_LISTENER` — nono's notify filter owns
+   it, so the gate is a plain filter, installed *after* nono's
+   (filters evaluate newest-first / LIFO); its `SECCOMP_RET_ALLOW`
+   for everything but `ptrace` is what passes the syscall on to
+   nono's filter. Also note the JSET encoding convention (nono's):
+   `jt=0, jf=1` — "taken" falls to the *next* instruction, "not
+   taken" skips one — encode by the desired fall-through, not the
+   branch direction. — *task 8.7 (v2.33); `src/sandbox/policy.rs`.*

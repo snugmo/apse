@@ -279,6 +279,67 @@ broker (`s0`) can reach them, because any `cN` dominates plain
 creator's range and recommended pre-creating the dir at `s0`; that
 premise was wrong — the dir is `s0` by construction.)
 
+## In-sandbox debugging (task 8.7, v2.33)
+
+A **two-layer gate**, because SELinux has no per-invocation policy
+(policy is global kernel state; a per-invocation *grant* is
+impossible — the type is a property of the file, not of a run):
+
+- **Per-sandbox: seccomp (the default on).** For every run *without*
+  `--debug`, B installs a **second, stacked classic-BPF seccomp
+  filter** after nono's notify filter that rejects the `ptrace`
+  syscall with `EPERM`; everything else is `SECCOMP_RET_ALLOW`
+  (falls through to nono's filter — filters evaluate newest-first).
+  It is invisible to SELinux and per-run by construction:
+  `apse run --debug` skips it for that one run, and the process
+  shows `Seccomp_filters: 1` instead of `2`.
+- **Global: the boolean `apse_app_ptrace` (default off).**
+  `(boolean apse_app_ptrace false)` plus a boolean-gated
+  **self**-grant `(allow apse_app_t apse_app_t (process (ptrace)))` —
+  a self-grant, because the debugger (strace/gdb) execs into
+  `apse_app_t` exactly like its target. Toggling is root-only
+  (an unprivileged `setsebool` is `EACCES`):
+  `sudo setsebool -P apse_app_ptrace on`.
+
+The two layers combine with **AND**: an in-sandbox debugger works
+only when *its* run's `--debug` removed the seccomp gate **and** the
+boolean is on. `apse run --debug` in confined mode reads the boolean
+unprivileged (it is a file read: `/sys/fs/selinux/booleans/apse_app_ptrace`,
+`<value> <state>`) **before building anything** and fails fast with
+an actionable message when it is off or absent (the module is too
+old). In unconfined mode the check is a no-op and the flag stands on
+the seccomp gate alone. The supervisor-side read needs its own
+grants: selinuxfs is labelled `security_t`, so the module allows
+`apse_t` `dir { search getattr }` and `file { open read getattr }`
+on it (LESSONS #79).
+
+Usage is **same-instance by construction**: the debugger *is* the
+app (`apse run --debug -- gdb ./target` — it forks+execs and
+ptraces its own child via `PTRACE_TRACEME`) or attaches within one
+instance (`apse run --debug -- sh -c 'app & strace -p $!'`). A
+*separate* instance cannot debug another one: its processes carry a
+different `cN` (the MCS section above — a single category is
+incomparable with any other, and the base mlsconstrain on
+`process:ptrace` denies it), and disjoint PID namespaces mean the
+target isn't even visible. Use the host-side path for that (below).
+
+**Host-side debugging is a different trust line and is unaffected:**
+`unconfined_t → apse_app_t` carries `ptrace` (the "user can trace"
+allow), and the user's own clearance range (`s0-s0:c0.c1023`)
+dominates any single `cN`, so `strace -p` / `gdb -p` from an
+unconfined shell attach to a sandboxed app as before (verified
+live, v2.33: attach + clean detach, zero denials).
+
+Verified in enforcing mode (v2.33): boolean off — baseline
+unchanged (2 filters, `ptrace` → `EPERM`, `--debug` fails fast);
+boolean on + `--debug` — `strace` on its own child (the
+`TRACEME` path), `strace -p` on an in-instance child (the `ATTACH`
+path), and `gdb` running a small C target all attach/detach with
+**zero denials**; boolean on without `--debug` — the seccomp gate
+still denies (the layers are independent). The `signull` (kill 0)
+gap in the base mlsconstrain (the MCS section) is unchanged by this
+task.
+
 ## The dedicated-type exec world (task 8.8, v2.32)
 
 The `ip`/`hostname` denial class: the distro labels most of the

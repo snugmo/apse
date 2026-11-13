@@ -312,6 +312,26 @@ phase 8.1).**
   narrowing degrades to a no-MCS run. In unconfined mode every
   mechanism is a no-op. Details: `selinux/README.md` (the
   "Per-instance MCS" section), decision #38.
+- **In-sandbox debugging (task 8.7, v2.33) is a two-layer gate with
+  AND semantics:** (1) *per-sandbox, default on* — for every run
+  except `--debug`, B installs a second stacked classic-BPF seccomp
+  filter *after* nono's notify filter (filters evaluate
+  newest-first, so it is checked first; `SECCOMP_RET_ALLOW` for
+  everything except `ptrace` → `EPERM`) — `run --debug` skips the
+  install for that one run (`Seccomp_filters: 2` → `1`; the X32
+  guard bit lives in the syscall *number*, not the arch — LESSONS
+  #80). (2) *global, default off* — the CIL boolean
+  `apse_app_ptrace` (root-only toggle, `setsebool -P`) gates the
+  `apse_app_t` **self**-grant `(process (ptrace))` (a self-grant:
+  the debugger execs into `apse_app_t` exactly like its target),
+  bounded to the run's own process tree by the MCS `cN`. `run
+  --debug` in confined mode reads the boolean unprivileged before
+  building (`/sys/fs/selinux/booleans/` holds `<value> <state>` —
+  two fields; `apse_t` needed a `security_t` `search`/`read` grant
+  to make the read possible — LESSONS #79) and fail-fasts with an
+  actionable message. Host-side `strace -p`/`gdb -p` from unconfined
+  are unaffected (the "user can trace" line). Details:
+  `selinux/README.md` ("In-sandbox debugging").
 - GPU: `/dev/dri/renderD*` nodes are bind-mounted into the sandbox's
   `/dev`; the user must be in the `render` group. `/dev` nodes are
   **bind-mounted, not mknod'd**, so the SELinux module (`selinux/`) can use

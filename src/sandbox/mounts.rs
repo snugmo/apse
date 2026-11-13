@@ -829,6 +829,7 @@ mod tests {
             gpu,
             profile: p,
             wayland: None,
+            debug: false,
         }
     }
 

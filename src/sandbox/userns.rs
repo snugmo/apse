@@ -703,6 +703,7 @@ pub(crate) mod tests {
             profile: crate::profile::Profile::adhoc(),
             gpu: false,
             wayland: None,
+            debug: false,
         };
         let (code, out, err) =
             run_in_child(
