@@ -765,11 +765,15 @@
 ; the lstat is denied, the target name never appears)
 (allow apse_app_t tmpfs_t (lnk_file (getattr read)))
 ; fish maps its controlling tty back to a `/dev/pts/<N>` name by
-; enumerating the (fresh, per-instance) devpts root: `open` for
-; the `opendir` call, `read` for the enumeration
-(allow apse_app_t devpts_t (dir (getattr open read search)))
+; enumerating the (fresh, per-instance) devpts root: the direct
+; grant is the base guest set (`ioctl lock read`, the `read` being
+; the readdir), `open`/`search`/`getattr` for the root come from
+; the `filesystem_type:dir` grant below (devpts_t is in the
+; attribute); the `user_devpts_t` slaves match the base guest
+; profile (append/lock/setattr included)
+(allow apse_app_t devpts_t (dir (ioctl lock read)))
 (allow apse_app_t devpts_t (chr_file (open read write getattr ioctl)))
-(allow apse_app_t user_devpts_t (chr_file (open read write getattr ioctl)))
+(allow apse_app_t user_devpts_t (chr_file (append getattr ioctl lock open read setattr write)))
 ; the compositor's keymap file: wlroots writes each client's XKB
 ; keymap to a shm file (`/dev/shm/wlroots-*` — `user_tmp_t`, the
 ; file transition a `unconfined_t` creator gets there), hands the
@@ -828,6 +832,11 @@
 ; metadata (fs type, size, free) — no content, so one attribute
 ; grant covers every mount the app may stat
 (allow apse_app_t filesystem_type (filesystem (getattr)))
+; the attribute's `dir` side: `getattr`/`open`/`search` on the
+; root dir of any of those mounts — this is what carries the
+; devpts root enumeration (fish, above) now that the direct
+; `devpts_t:dir` grant is the base guest set
+(allow apse_app_t filesystem_type (dir (getattr open search)))
 ; The broad `file_type:* map` grant that lived here (v2.25 — the
 ; PROT_NONE case of the `domain_can_mmap_files` tunable; content-
 ; free, but on the *whole file class*) was dropped in v2.28 as
@@ -1088,8 +1097,12 @@
 (allow apse_app_t cert_type (file (getattr ioctl lock open read)))
 (allow apse_app_t cert_type (lnk_file (getattr read)))
 ; VFS superblock objects are stat'd during path lookup on some
-; mount types (`filesystem getattr`)
+; mount types (`filesystem getattr`): `fs_t` is the default sb
+; label and is *not* in `file_type`; the `file_type` grant (the
+; base guest profile) covers the file-labelled superblocks —
+; the fresh tmpfs trees, /proc, /sys, cgroup2, devpts
 (allow apse_app_t fs_t (filesystem (getattr)))
+(allow apse_app_t file_type (filesystem (getattr)))
 (allow apse_app_t xserver_t (unix_stream_socket (connectto read write)))
 (allow xserver_t apse_app_t (unix_stream_socket (read write)))
 ; the satellite's fds (the displayfd socketpair, the listening X
