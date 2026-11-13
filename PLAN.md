@@ -1369,11 +1369,21 @@ audited as a write).
       tuning).** Once exec is no longer the gate, the next denial
       wave is what the tools *do*: `ip` needs the `netlink` socket
       classes (the module grants **no** netlink to `apse_app_t` at
-      all today) and `hostname <name>` needs `sys:sethostname`
-      (the capability side is fine — the app holds `CAP_SYS_ADMIN`
-      in its own userns/utsns). Decide each in the tuning loop
-      (zero-denial target); `netlink_audit_socket` stays denied
-      (8.7 note).
+      all today). `hostname` splits: **get** mode needs nothing
+      more (verified 2026-11-13 — `uname -n` / `gethostname()` in
+      a live sandbox, zero denials: the `sys` class's only
+      hostname permission is `sethostname`, set-only; the read
+      path has no MAC check) and shows the instance's identity —
+      apse initializes the private UTS namespace's hostname to
+      `apse-<app>-<inst>` (`sandbox/mod.rs`, 64-byte kernel
+      limit); **set** mode (`hostname <name>`) needs the SELinux
+      `sys:sethostname` permission (the module grants the app no
+      `sys` class today) — the Linux capability side is already
+      satisfied (the app holds `CAP_SYS_ADMIN` in its own userns)
+      — and its blast radius is exactly the instance's UTS-ns
+      copy, which dies with the instance and can never touch the
+      host's. Decide each in the tuning loop (zero-denial
+      target); `netlink_audit_socket` stays denied (8.7 note).
       **Verify** (target machine, confined binary, enforcing):
       (a) baseline before the change: `route` OK, `ip` /
       `hostname` denied (reproduce the audit rows above);
