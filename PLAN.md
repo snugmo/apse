@@ -10,9 +10,11 @@ the audit `denied` baseline is flat.
 
 Open: **6.4** (the varlink tier) — parked until a released systemd ships
 `PIDs` in scope contexts (re-checked 2026-11-04: v263 still in
-development; Fedora 45's 262.1 has no user-bus varlink socket); and
+development; Fedora 45's 262.1 has no user-bus varlink socket);
 **8.6** (a per-invocation `--no-selinux` flag) — the root-only,
-persistent file-relabel escape as a CLI knob. Deferred denial
+persistent file-relabel escape as a CLI knob; **8.7** (in-sandbox
+debugging: a boolean-gated `ptrace` grant + `debug` profile/flag) —
+gdb/strace inside a confined run. Deferred denial
 classes (user's call, accepted — not sandbox use cases): fish's
 completion *executing* the enumerated admin tools, the `find /` class,
 the metadata sweeps (`getfattr -R`; the python3 man readlink sweep).
@@ -1219,6 +1221,73 @@ audited as a write).
       (regression guard); (c) the re-exec fires exactly once.
       CI is unaffected — the test-suite binary is unrelabeled, so
       the flag is a no-op there.
+- [ ] 8.7 *(future)* In-sandbox debugging: a boolean-gated `ptrace`
+      grant (`apse_app_ptrace`, off by default) + a `debug`
+      profile/flag that validates it: run gdb/strace *inside* a
+      confined run, debugging processes within the same instance.
+      **The denial (audit-verified, v2.25 enforcing):** a debugger
+      running as the app is refused `ptrace` on the process it
+      wants to debug — five denials from strace and gdb, all
+      `scontext = tcontext = apse_app_t:s0:c1007`, `tclass=process`,
+      `permissive=0` — i.e. a missing **self**-grant: the v2.25
+      mirror of `domain`'s self-grants omits `process:ptrace`
+      because the base `domain` does not ptrace itself. **The split
+      that matters:** *host-side* debugging already works —
+      `unconfined_t → apse_app_t` carries `ptrace` (the "user can
+      trace" line) and `strace -p` / `gdb -p` from an unconfined
+      shell attach cleanly (verified live, 2026-11-13) — so 8.7
+      only concerns the *in-sandbox* debugger.
+      **Mechanism — a boolean, because SELinux has no per-
+      invocation policy.** Policy is global kernel state; a per-
+      invocation *grant* is impossible (as with 8.6, `apse_t` is a
+      property of the file, not of a run). So: `gen_bool
+      apse_app_ptrace false` plus the self-grant `(allow
+      apse_app_t apse_app_t (process (ptrace)))` inside `(if
+      (boolean apse_app_ptrace) …)`. **The toggle is root-only:**
+      `setsebool` as a regular user fails EACCES (verified
+      2026-11-13 — `unconfined_t` has no `boolean:write`), so the
+      toggle is `setsebool -P apse_app_ptrace on` by root — the
+      "setsebool option" from the bug report, but persistent and
+      system-wide. An unconditional (un-gated) grant is
+      defensible — the self-grant is MCS-bounded in effect (module
+      note near the self-grant block): the only processes sharing
+      the app's `cN` are its own tree in the *same* instance, so it
+      cannot reach other instances, the supervisor (`apse_t`), or
+      the host — but default-off + boolean keeps "least by
+      default" and gives an off switch.
+      **Per-invocation UX (flag/profile, grants nothing):** a
+      `debug = true` profile key or `--debug` flag that (a) reads
+      the boolean (unprivileged — it is a file read) and fails
+      fast with a clear message if it is off, and (b) records in
+      the profile that the entry command is a debugger.
+      **Usage is same-instance by construction:** the debugger is
+      the app (`apse run -- gdb ./target` — it forks+execs and
+      ptraces its own child) or attaches within one instance
+      (`apse run -- sh -c 'app & strace -p $!'`); a *separate*
+      instance cannot debug another (different `cN`, MCS blocks —
+      by design; use the host-side path).
+      **Expected scope of the grant:** `process:ptrace` alone may
+      close it — the `/proc/<pid>` tree carries the *target's* own
+      context on this kernel (LESSONS #45, module note), so a
+      debugger's reads of the target's `mem` / `maps` / `cmdline`
+      are checks against `apse_app_t` self, which the existing file
+      self-grants cover (`open` / `read` / `map`). The tuning loop
+      (zero-denial goal) decides anything more. The same audit run
+      also showed one `netlink_audit_socket: create` denial from a
+      shell — do **not** grant by default (an app reading the
+      audit log can observe other processes' denials); revisit only
+      if a legitimate app needs it.
+      **Verify** (target machine, confined binary, enforcing):
+      (a) boolean off: in-sandbox strace/gdb denied as today
+      (baseline unchanged); (b) boolean on: `gdb` on a small C
+      target and `strace` on an in-instance child attach/detach
+      cleanly — zero denials across the whole debug session;
+      (c) cross-instance: a debugger in instance A against a
+      process in instance B — still denied (MCS intact);
+      (d) host-side `strace -p` unaffected; (e) a normal run
+      (boolean off, no debugger) — zero denials, no behavior
+      change. Document in `selinux/README.md` (Operating modes →
+      debugging) and in AGENTS.md.
 
 ## 8. Risks / things to watch
 
