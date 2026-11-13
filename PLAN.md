@@ -41,7 +41,7 @@ debugging: a boolean-gated `ptrace` grant + `debug` profile/flag) —
 gdb/strace inside a confined run; **8.8** (an `exec_type`-wide exec
 grant) — the `ip` / `hostname` denial class: one attribute grant
 instead of chasing 141 distribution exec labels; the per-tool work
-moves to functional grants (netlink, `sethostname`). Deferred denial
+moves to functional grants (netlink). Deferred denial
 classes (user's call, accepted — not sandbox use cases): fish's
 completion *executing* the enumerated admin tools, the `find /` class,
 the metadata sweeps (`getfattr -R`; the python3 man readlink sweep).
@@ -1691,21 +1691,15 @@ audited as a write).
       tuning).** Once exec is no longer the gate, the next denial
       wave is what the tools *do*: `ip` needs the `netlink` socket
       classes (the module grants **no** netlink to `apse_app_t` at
-      all today). `hostname` splits: **get** mode needs nothing
-      more (verified 2026-11-13 — `uname -n` / `gethostname()` in
-      a live sandbox, zero denials: the `sys` class's only
-      hostname permission is `sethostname`, set-only; the read
-      path has no MAC check) and shows the instance's identity —
-      apse initializes the private UTS namespace's hostname to
-      `apse-<app>-<inst>` (`sandbox/mod.rs`, 64-byte kernel
-      limit); **set** mode (`hostname <name>`) needs the SELinux
-      `sys:sethostname` permission (the module grants the app no
-      `sys` class today) — the Linux capability side is already
-      satisfied (the app holds `CAP_SYS_ADMIN` in its own userns)
-      — and its blast radius is exactly the instance's UTS-ns
-      copy, which dies with the instance and can never touch the
-      host's. Decide each in the tuning loop (zero-denial
-      target); `netlink_audit_socket` stays denied (8.7 note).
+      all today). `hostname`: **get** mode (the 99% case — dev scripts
+      reading the instance's identity) needs nothing more (verified
+      2026-11-13: `uname -n` / `gethostname()` in a live sandbox,
+      zero denials — the `sys` class's only hostname permission is
+      `sethostname`, set-only; the read path has no MAC check).
+      **set** mode is intentionally *not* granted: the UTS hostname
+      is the instance's private identity (`apse-<app>-<inst>`),
+      set by apse at sandbox init; the app can read it but not
+      change it. `netlink_audit_socket` stays denied (8.7 note).
       **Verify** (target machine, confined binary, enforcing):
       (a) baseline before the change: `route` OK, `ip` /
       `hostname` denied (reproduce the audit rows above);
@@ -1716,8 +1710,8 @@ audited as a write).
       generic-type transition (if accepted): `apse run --
       /usr/bin/hostname` starts and the in-sandbox
       `/proc/self/attr/current` shows `apse_app_t`; (e) tuning
-      loop through the netlink / sethostname wave to zero denials
-      for the tools actually used; (f) CI unaffected (the
+      loop through the netlink wave to zero denials for the tools
+      actually used; (f) CI unaffected (the
       test-suite binary is unrelabeled). Document the grant and
       the setuid-stripping invariant in `selinux/README.md`.
 - [x] 8.9 Drop the `home = "host"` profile mode (2026-11-13,
