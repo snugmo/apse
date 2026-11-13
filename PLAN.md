@@ -2,21 +2,26 @@
 
 ## Status
 
-Current: **v2.28** (2026-11-13; enforcing, kernel 7.2.15). The
+Current: **v2.29** (2026-11-13; enforcing, kernel 7.2.15). The
 SELinux module's app domain carries the base `domain` attribute's
 file-read set *as written* on `base_file_type` /
-`base_ro_file_type` — read-only, the least privilege an ordinary
-confined user domain has on the basic trees of the default
-installation (the v2.26 first cut on `non_auth_file_type` was
-revised the same day, v2.27). The broad `file_type:* map` grant
-(v2.25) is dropped: too broad as a default position, and
-A/B-verified inert on this kernel — 7.2.15's plain `mmap()` path
-enforces neither `map` nor per-prot file permissions, so file
-access is gated by `open()`, exactly as the per-type rules already
-model (LESSONS #71). The dedicated /etc config types show `????` in
-a confined `ls -l /etc` (45 entries — accepted; task 8.10's
-per-instance hosts/hostname/resolv.conf binds are the substantive
-fix). The v2.24/2.25 /proc closure is preserved.
+`base_ro_file_type` (v2.27) — read-only, the least privilege an
+ordinary confined user domain has on the basic trees of the
+default installation — plus (v2.29) the `non_security_file_type`
+**metadata-only** grants (lstat + readlink: the v2.26 `????`
+thread's resolution, the dedicated /etc config types clear again,
+the remainder is the audit config and the four shadow entries that
+`domain` itself cannot stat) and the cert / /dev-node / devpts
+grants aligned to the base session profiles (the cert grants now
+ride the `cert_type` attribute, so the per-service cert stores
+are covered). The v2.29 tidy pass dropped 15 subsumed per-type
+rules and added 5 attribute-scoped ones (net −10: 295 → 285);
+`exec_type:file:getattr` *stays* — it is the sole stat() path to
+the 140 per-purpose exec types in the bin/libexec trees (8.8's
+`exec_type`-wide exec grant absorbs it). The broad `file_type:*
+map` grant (v2.25) remains dropped: A/B-verified inert on this
+kernel, `open()` gates file access (LESSONS #71). The v2.24/2.25
+/proc closure is preserved.
 
 Open: **6.4** (the varlink tier) — parked until a released systemd ships
 `PIDs` in scope contexts (re-checked 2026-11-04: v263 still in
@@ -41,6 +46,55 @@ completion *executing* the enumerated admin tools, the `find /` class,
 the metadata sweeps (`getfattr -R`; the python3 man readlink sweep).
 
 ### Change log (newest first)
+
+- **v2.29** (2026-11-13; enforcing): the module tidy + alignment
+  pass (user-driven; every membership and base grant
+  seinfo/sesearch-verified against the live policy). Net
+  **−10 rules (295 → 285)**: 15 subsumed per-type rules dropped,
+  5 attribute-scoped grants added. (1) *Redundancy* — 13
+  `apse_app_t` per-type rules whose (type, class, permissions) is
+  a strict subset of the v2.27 base-set attribute grants
+  (`var_run_t:dir`, `etc_t:dir`+`file`+`lnk_file`,
+  `root_t:dir:search`, `bin_t:dir`+`lnk_file`, `usr_t:dir`×2+
+  `lnk_file`, `lib_t:dir`+`lnk_file`×2 — all their types are
+  members of `base_file_type`/`base_ro_file_type`); then
+  `base_file_type:lnk_file` (both base sets ⊆
+  `non_security_file_type`) and `exec_type:lnk_file` (all 1048
+  `exec_type` members are in the attribute; the identical grant
+  rides on it). (2) *`non_security_file_type` metadata grants* —
+  the v2.26 `????` thread continued: `dir getattr` (the lstat) +
+  `lnk_file { getattr read }` (the readlink), metadata only — no
+  `file` class, no `open`/`read` anywhere. The attribute (3205
+  members, ⊂ `non_auth_file_type`) excludes the security files
+  (`auditd_etc_t`/`auditd_log_t`, the SELinux config/store types,
+  `krb5_keytab_t`) and the auth files (`shadow_t`): the ~27
+  dedicated /etc config types v2.27 left as `????` clear again,
+  and what remains is exactly the set `domain` itself cannot stat
+  (audit config + the four shadow entries). (3) *Alignment with
+  the base session profiles* (sesearch exact-source on
+  `domain`/`guest_usertype`): the cert grants retarget
+  `cert_t` → the `cert_type` attribute (8 members — the
+  per-service cert stores covered too; the intended widening,
+  apps may need to read public keys from the various cert
+  stores) and shaped to the base-set profile (dir/file gain
+  `ioctl`/`lock`, a new `lnk_file` for the hashed symlink tree
+  under /etc/ssl/certs); the bound /dev nodes' `chr_file` grants
+  match the base session sets (`urandom` drops `write` — the
+  base `domain` grant is read-only; `random` up from stat-only to
+  the usertype read set); `user_devpts_t` matches
+  `guest_usertype` (append/lock/setattr); `devpts_t:dir` is the
+  base guest set `{ ioctl lock read }`, composed with the new
+  `filesystem_type:dir { getattr open search }` grant (`devpts_t`
+  is a member — it carries getattr/open/search, the direct grant
+  the readdir) so fish's /dev/pts enumeration loses nothing; a
+  new `file_type:filesystem getattr` (superblock stat of
+  file-labelled filesystems — the fresh tmpfs trees, /proc, /sys,
+  cgroup2, devpts; the existing `fs_t` rule stays, `fs_t` is not
+  a `file_type` member). `exec_type:file:getattr` stays (the
+  attribute has no `file` grant; 319 regular files across 140
+  per-purpose exec types in `/usr/bin`/`/usr/libexec` stat only
+  through it). Live check at the next module reload (the
+  installed module is still v2.28).
 
 - **v2.28** (2026-11-13; enforcing): the broad `file_type:* map`
   grant dropped (user's call: too broad as a default position —
