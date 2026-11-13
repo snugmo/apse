@@ -113,7 +113,8 @@
 (typeattributeset cil_gen_require user_fonts_cache_t)
 (typeattributeset cil_gen_require fs_t)
 (typeattributeset cil_gen_require filesystem_type)
-(typeattributeset cil_gen_require non_auth_file_type)
+(typeattributeset cil_gen_require base_file_type)
+(typeattributeset cil_gen_require base_ro_file_type)
 (typeattributeset cil_gen_require proc_type)
 (typeattributeset cil_gen_require sysctl_type)
 (typeattributeset cil_gen_require sysctl_t)
@@ -853,75 +854,68 @@
 (allow apse_app_t cgroup_t (file (getattr open read)))
 (allow apse_app_t etc_t (dir (getattr open search read)))
 (allow apse_app_t etc_t (file (getattr open read)))
-; v2.26 (the `????` fix): a confined `ls -l /etc` showed
-; `d??????????` / `l??????????` for ~42 entries. Their inodes
-; carry the base policy's *dedicated* config types (`auditd_etc_t`,
-; `avahi_conf_t`, `bluetooth_conf_t`, `cupsd_etc_t`,
-; `dbusd_etc_t`, `dhcp_etc_t`, `dnsmasq_etc_t`, `exports_t`,
-; `firewalld_etc_rw_t`, `ipsec_key_file_t`, `kmscon_conf_t`,
-; `lvm_etc_t`, `mcelog_etc_t`, `modules_conf_t`, `named_conf_t`,
-; `net_conf_t`, `NetworkManager_etc_t`, `openvpn_etc_t`,
-; `pppd_etc_t`, `samba_etc_t`, `sssd_conf_t`, `syslog_conf_t`,
-; `system_cron_spool_t`, `tuned_etc_t`, …) — not `etc_t` (the two
+; v2.26 (the `????` fix, revised the same day): a confined
+; `ls -l /etc` showed `d??????????` / `l??????????` for ~42
+; entries. Their inodes carry the base policy's *dedicated*
+; config types (`auditd_etc_t`, `avahi_conf_t`, `bluetooth_conf_t`,
+; `cupsd_etc_t`, `dbusd_etc_t`, `dhcp_etc_t`, `dnsmasq_etc_t`,
+; `exports_t`, `firewalld_etc_rw_t`, `ipsec_key_file_t`,
+; `kmscon_conf_t`, `lvm_etc_t`, `mcelog_etc_t`, `modules_conf_t`,
+; `named_conf_t`, `net_conf_t`, `NetworkManager_etc_t`,
+; `openvpn_etc_t`, `pppd_etc_t`, `samba_etc_t`, `sssd_conf_t`,
+; `syslog_conf_t`, `system_cron_spool_t`, `tuned_etc_t`,
+; `vmtools_unconfined_exec_t`, `locale_t`, …) — not `etc_t` (the
 ; rules above cover it) — and none of them had a rule, so
 ; `stat(2)` on each inode was denied. Listing itself worked (the
 ; /etc dir is `etc_t`: `dir read`/`search`), which is why the
 ; names were visible but the metadata was not.
 ;
-; The grant is the *union of the base `domain` read set* —
-; `domain:base_file_type dir { getattr open search }` +
-; `lnk_file { getattr read }`, `domain:base_ro_file_type dir
-; { ioctl lock read }` + `file { getattr ioctl lock open read }`
-; (verified as-written with `sesearch -ds`; the domain attribute
-; targets *no* broader file attribute) — but pointed at the base
-; attribute `non_auth_file_type` instead of the two base_* sets:
-; the dedicated config types are members of *neither* (23 / 11
-; members, the big filesystem types), so the domain rules as
-; written would have fixed none of the 42, and enumerating the
-; ~28 types individually is the same distro-relabel fragility the
-; exec world has (task 8.8). `non_auth_file_type` is "every file
-; type except the auth files" (3213 members here; it strictly
-; contains all 23 of `base_file_type`) — precedent: `hypervvssd_t`
-; uses exactly this attribute for the same broad read.
+; First cut (d79fc41): the same read-only set pointed at
+; `non_auth_file_type` (3213 members) — that cleared all 42 (42 →
+; 4, only `shadow_t` left). But that attribute is broader than the
+; `domain` baseline: the base policy's `domain` attribute targets
+; *no* `non_auth_file_type` rule at all (verified as-written with
+; `sesearch -ds -s domain -A -c filesystem` — its broad reads come
+; from the `files_unconfined_type` *source* side, unconfined-only,
+; plus named types), and the only Fedora rules that target
+; `non_auth_file_type` are system tools (tmpfiles, restorecon).
 ;
-; What it deliberately does *not* open (verified per-type against
-; the loaded avtab — `seinfo` membership × `sesearch --allow -s
-; apse_app_t`, the four attribute targets resolved): the
-; /proc/sys *content* types (`sysctl_kernel_t`/`sysctl_net_t`/
-; `sysctl_vm_t` — the v2.24/2.25 closure) and `proc_net_t` are
-; **not** members; the only /proc-side members are `proc_t`
-; (already fully granted below), `proc_xen_t` (Xen-only) and
-; `system_map_t` (public kernel symbol maps). `tmpfs_t`/`sysfs_t`/
-; `unlabeled_t` are members but already carry equal-or-broader
-; grants. New practical surface: the distro long tail (config/
-; log/var/spool types — incl. `ipsec_key_file_t`, which
-; `user_t` and every `svirt_sandbox_domain`/`container_domain`
-; read on the host, i.e. at the sandbox baseline) and the
-; `exec_type` members, already `file_type:file map`-able by the
-; app anyway (mmap implies read).
+; Revised grant (user's least-privilege call, 2026-11-13): exactly
+; the `domain` baseline file read set, as written, on the two
+; base sets only — `base_file_type` (23 members: `etc_t`,
+; `system_conf_t`, `etc_runtime_t`, `usr_t`, `bin_t`, `lib_t`,
+; …) and `base_ro_file_type` (11, all ⊆ the former). Read-only:
+; no `write`/`create`/`add_name`/`remove_name`/`setattr`/
+; `execute*`; `open`/`ioctl`/`lock` are the read-class verbs the
+; domain set carries.
 ;
-; Read-only by construction: `getattr`/`open`/`read`/`search` +
-; the read-class `ioctl`/`lock` pair the domain set carries — no
-; `write`/`create`/`add_name`/`remove_name`/`setattr`/`execute*`,
-; so nothing is modifiable or executable through this grant
-; (modification stays on the dedicated types above, exec on the
-; exec types). `apse_t` gets no such grant: it has no rule on any
-; /etc type at all — the supervisor does no broad /etc reads, and
-; the denial-driven principle applies to it too.
+; Deliberate cost: the ~28 dedicated config types are members of
+; *neither* base set (verified with `seinfo -x`), so they remain
+; `????` in `ls -l /etc` (count back to 45: those, plus the four
+; `shadow_t` auth files, which `domain` cannot stat either — only
+; the off-gated `file_type:map`; `dontaudit`'d, so no audit spam).
+; That is cosmetic: the app cannot use those files meaningfully
+; anyway, and an app that actually needs one gets a dedicated
+; rule on denial — the tuning principle. Enumerating the ~28
+; types individually was considered and rejected as the same
+; distro-relabel fragility the exec world has (task 8.8). The
+; v2.24/2.25 /proc closure is preserved: `sysctl_kernel_t`/
+; `sysctl_net_t`/`sysctl_vm_t` and `proc_net_t` are members of
+; neither base set.
 ;
-; Verified in enforcing mode (2026-11-13): the `????` count in
-; `ls -l /etc` went 42 → 4. The four remaining are the auth files
-; (`/etc/shadow`, `/etc/gshadow` and their `-` backups; all
-; `shadow_t`) — excluded from `non_auth_file_type` by definition,
-; and the base `domain` attribute carries *no* stat grant on
-; `shadow_t` either (only the off-gated `file_type:map`): a
-; confined app cannot stat the shadow files, exactly like any
-; ordinary confined user domain. Their denials are
-; `dontaudit`'d by the base policy (no audit spam — unchanged from
-; pre-v2.26), and the run produced no new denials of any kind.
-(allow apse_app_t non_auth_file_type (dir (getattr open search read lock ioctl)))
-(allow apse_app_t non_auth_file_type (file (getattr open read lock ioctl)))
-(allow apse_app_t non_auth_file_type (lnk_file (getattr read)))
+; `apse_t` gets no such grant: the supervisor reads no broad file
+; set, and the denial-driven principle applies to it too.
+;
+; Verified in enforcing mode (2026-11-13, both cuts): the first
+; cut took the `????` count 42 → 4; this cut takes it back to 45
+; (the dedicated types incl. `hosts`/`hostname`/`machine-id`/
+; `localtime`/`resolv.conf` — the task 8.10 per-instance files —
+; plus the four shadow files), and the run produced no new
+; denials of any kind.
+(allow apse_app_t base_file_type (dir (getattr open search)))
+(allow apse_app_t base_file_type (lnk_file (getattr read)))
+(allow apse_app_t base_ro_file_type (dir (ioctl lock read)))
+(allow apse_app_t base_ro_file_type (file (getattr ioctl lock open read)))
 (allow apse_app_t root_t (dir (search)))
 (allow apse_app_t home_root_t (dir (getattr open read search)))
 (allow apse_app_t user_home_dir_t (dir (getattr open search read)))

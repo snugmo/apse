@@ -2,14 +2,20 @@
 
 ## Status
 
-Current: **v2.26** (2026-11-13; enforcing, kernel 7.2.15). The SELinux
-module's app domain carries a read-only grant on the base
-`non_auth_file_type` attribute — the domain baseline file read set
-extended to every non-auth file type, so the dedicated /etc config
-types (`auditd_etc_t`, `avahi_conf_t`, …) stat/read cleanly instead of
-showing `????` in a confined `ls -l /etc`. The v2.24/2.25 /proc
-closure is preserved (the /proc/sys content types are not members of
-the attribute).
+Current: **v2.27** (2026-11-13; enforcing, kernel 7.2.15). The SELinux
+module's app domain carries the base `domain` attribute's file-read
+set *as written* — `base_file_type` / `base_ro_file_type`, the basic
+types of the default installation (`etc_t`, `system_conf_t`,
+`etc_runtime_t`, `usr_t`, `bin_t`, `lib_t`, …) — read-only, exactly
+the least privilege an ordinary confined user domain has on those
+trees. The v2.26 first cut (`non_auth_file_type`, 3213 members) was
+deemed overly permissive and revised the same day. The dedicated /etc
+config types show `????` in a confined `ls -l /etc` again (45
+entries — accepted least-privilege trade; the app cannot use them
+anyway, and task 8.10's per-instance hosts/hostname/resolv.conf
+binds are the substantive fix for the five that matter). The
+v2.24/2.25 /proc closure is preserved (the /proc/sys content types
+are members of neither base set).
 
 Open: **6.4** (the varlink tier) — parked until a released systemd ships
 `PIDs` in scope contexts (re-checked 2026-11-04: v263 still in
@@ -34,6 +40,34 @@ completion *executing* the enumerated admin tools, the `find /` class,
 the metadata sweeps (`getfattr -R`; the python3 man readlink sweep).
 
 ### Change log (newest first)
+
+- **v2.27** (2026-11-13; enforcing): revision of the v2.26 grant.
+  `non_auth_file_type` (3213 members) was judged overly permissive —
+  the base `domain` attribute targets *no* `non_auth_file_type` rule
+  at all (LESSONS #70's `sesearch -ds` is the tool that proved it:
+  `domain`'s literal filesystem targets are `base_file_type` /
+  `base_ro_file_type` plus named types; its broad reads come from the
+  `files_unconfined_type` *source* side, unconfined-only), and the
+  only Fedora rules targeting `non_auth_file_type` are system tools
+  (tmpfiles, restorecon). The app's grant is now the `domain`
+  baseline file read set as written, on the two base sets only:
+  `base_file_type` (23 members) `dir { getattr open search }` +
+  `lnk_file { getattr read }`, `base_ro_file_type` (11, all ⊆ the
+  former) `dir { ioctl lock read }` + `file { getattr ioctl lock
+  open read }`. Read-only, same shape as v2.26. Cost (user's
+  least-privilege call, accepted): the dedicated /etc config types
+  are members of *neither* base set (`seinfo -x`), so the `????`
+  count in `ls -l /etc` goes **4 → 45** — those types, plus
+  `hosts` / `hostname` / `machine-id` / `localtime` / `resolv.conf`
+  (the five task 8.10 will provide as per-instance binds — the
+  substantive fix) and the four `shadow_t` auth files (unchanged:
+  `domain` cannot stat them either; `dontaudit`'d, no audit spam).
+  Enumerating the ~30 types individually was rejected as the same
+  distro-relabel fragility the exec world has (task 8.8). Verified in
+  enforcing mode: `ls -l /etc` runs, count 45 as predicted, zero new
+  AVC denials; the v2.24/2.25 /proc closure is untouched (the
+  `sysctl_*` content types and `proc_net_t` are members of neither
+  base set). `apse_t` still has no broad file grant.
 
 - **v2.26** (2026-11-13; enforcing): the `????` fix — a read-only
   grant on `non_auth_file_type` for the app domain. A confined
@@ -89,7 +123,9 @@ the metadata sweeps (`getfattr -R`; the python3 man readlink sweep).
   `file_type:map`), so a confined app cannot stat them, exactly
   like any ordinary confined user domain (their denials are
   `dontaudit`'d in base — no audit spam, unchanged). No new
-  denials of any kind in the audit log over the run.
+  denials of any kind in the audit log over the run. (Superseded
+  the same day in v2.27, above: the attribute was judged overly
+  broad and the grant narrowed to the two base sets.)
 
 - **v2.25** (2026-11-12; enforcing): fifth SELinux round — a *proactive*
   completeness pass (no user-reported denial). The app's **self**-grants

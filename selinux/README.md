@@ -86,11 +86,16 @@ the module uses them; otherwise the file is bare statements.
   `df` surface; see the tuning notes below). Its *self*-grants are
   the full base-policy `domain` set, mirrored explicitly (v2.25 —
   the tuning notes explain why the `domain` attribute itself is not
-  joined). A read-only grant on the base `non_auth_file_type`
-  attribute (v2.26) gives it the domain baseline file read set
-  across every non-auth file type — the dedicated /etc config types
-  included (the `????` fix) — while the /proc/sys content closure
-  stays intact (those types are not members of the attribute).
+  joined), plus the domain baseline file read set *as written* on
+  the two base file attributes — `base_file_type` /
+  `base_ro_file_type`, the basic types of the default installation
+  (v2.27; the v2.26 first cut on `non_auth_file_type` was judged
+  overly broad and revised the same day). The dedicated /etc
+  config types are in neither base set, so they show `????` in a
+  confined `ls -l /etc` again — an accepted least-privilege trade
+  (task 8.10's per-instance hosts/hostname/resolv.conf binds are
+  the substantive fix) — while the /proc/sys content closure stays
+  intact (those types are members of neither base set either).
 - `apse_state_t` — the per-app state tree
   (`$XDG_STATE_HOME/apse/` — on Fedora `~/.local/state/apse/`), the
   home of decision #43. A dedicated type instead of the
