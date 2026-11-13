@@ -14,7 +14,10 @@ development; Fedora 45's 262.1 has no user-bus varlink socket);
 **8.6** (a per-invocation `--no-selinux` flag) — the root-only,
 persistent file-relabel escape as a CLI knob; **8.7** (in-sandbox
 debugging: a boolean-gated `ptrace` grant + `debug` profile/flag) —
-gdb/strace inside a confined run. Deferred denial
+gdb/strace inside a confined run; **8.8** (an `exec_type`-wide exec
+grant) — the `ip` / `hostname` denial class: one attribute grant
+instead of chasing 141 distribution exec labels; the per-tool work
+moves to functional grants (netlink, `sethostname`). Deferred denial
 classes (user's call, accepted — not sandbox use cases): fish's
 completion *executing* the enumerated admin tools, the `find /` class,
 the metadata sweeps (`getfattr -R`; the python3 man readlink sweep).
@@ -1288,6 +1291,103 @@ audited as a write).
       (boolean off, no debugger) — zero denials, no behavior
       change. Document in `selinux/README.md` (Operating modes →
       debugging) and in AGENTS.md.
+- [ ] 8.8 *(future)* `exec_type`-wide exec grant — the `hostname` /
+      `ip` denial class: stop chasing the distribution's per-binary
+      exec labels. **The denials (audit-verified, v2.25 enforcing,
+      2026-11-13):** at *two* levels, both `file:execute` (plus
+      `read` at the child level): (1) *app* level — B's execve of
+      the app fails when the app binary carries a dedicated type
+      (`apse_t → hostname_exec_t / ifconfig_exec_t: file
+      {execute}` — `apse run -- /usr/bin/ip` never even starts);
+      (2) *child* level — an in-sandbox shell exec'ing such a tool
+      (`apse_app_t:s0:c1007 → ifconfig_exec_t: file {execute,
+      read}`). `route` works because it is `bin_t`, which both
+      enumerated grant lists cover (module lines ~407 / ~896);
+      `ip` is `ifconfig_exec_t`, `hostname` is `hostname_exec_t` —
+      in neither. Scale on this machine: ~2,600 user-executables in
+      `/usr/bin` + `/usr/sbin` spread over **141 distinct file
+      types**; the module's lists cover about three of them. Most of
+      the rest are root-only by DAC (no friction for a real-uid
+      app); the friction class is innocuous user tools with
+      dedicated types (`ip`, `hostname`, `ping`, `traceroute`,
+      `netutils`, `journalctl`, `gpg`, `pinentry`, `crack`, …).
+      **Mechanism — grant the base-policy `exec_type` *attribute*,
+      not `file_type`** (user's refinement, verified): `exec_type`
+      is the attribute the base policy attaches to executable-file
+      types, whereas `file_type` is the generic type for
+      *everything* file-like — the attribute keeps the
+      `open` / `read` / `getattr` / `execute` / `execute_no_trans`
+      set on executables only. (a) *Child level:* `allow
+      apse_app_t exec_type (file (open read getattr execute
+      execute_no_trans))` — **no `noatsecure`**: a setuid exec then
+      runs setuid-stripped (secure-exec), so `pkexec` / `su` gain
+      nothing, and DAC remains the backstop (the app is the user's
+      real uid — only files it can already read/exec are
+      reachable); no transition rule matches, so the child stays
+      `apse_app_t` (`execute_no_trans`) and inherits the whole
+      envelope (landlock can only shrink across exec, the seccomp
+      filter, the namespaces, the MCS category) — the grant widens
+      *which* binaries load, not *what* the process can do.
+      (b) *App level:* `allow apse_t exec_type (…)` plus, as an
+      experiment, a **generic-type transition** (`type_transition
+      apse_t exec_type process apse_app_t` — the attribute in the
+      object slot; the target-slot form is proven, the object-slot
+      form is the open question) so B can start *any* executable as
+      the app; if the toolchain rejects it, keep the transition set
+      enumerated (the apps the user runs are few and mostly
+      `bin_t`) and accept that a dedicated-type *app* needs one
+      line each.
+      **Why not a flatpak-style runtime container instead** (the
+      user's proposal, evaluated): flatpak solves label diversity by
+      *extracting* content into a user-owned tree so the whole tree
+      can share one label (verified here:
+      `~/.local/share/flatpak/repo` is all `flatpak_home_t`) — only
+      new inodes can carry a new label (a bind mount shares the
+      inode; a symlink is checked against its target's type). For
+      apse that would mean copying/curating the OS into an
+      apse-owned tree: multi-GB, stale (ABI drift against the host
+      kernel), double updates — and it inverts the product (run
+      *host* apps, not repackaged ones); it would not even fully
+      solve it, because the app's own files stay host-labeled and
+      the app-level set would still chase types. The per-type exec
+      set was never a real boundary in this threat model (a child
+      inherits the full envelope) — it is a completeness accident,
+      and `exec_type` removes it in two lines.
+      **Verified on this toolchain** (Fedora 45, policycoreutils
+      3.11, `semodule -i` CIL mode): a probe module using
+      `exec_type` in an allow target slot installs cleanly
+      (undefined identifiers fail at install, so the attribute
+      exists and the compiled policy expands it), and a `runcon`
+      exec oracle (a probe process type exec'ing one world-exec
+      file per type) shows **141/141** types covered, zero
+      denials. Note for the verify steps: this `sesearch` does
+      *not* resolve attribute membership in rule queries (a `-t`
+      against an attribute-valued rule returns the raw rule for
+      *any* type — `usr_t` included), so membership checks go
+      through AVCs or the runcon oracle, not sesearch.
+      **Follow-on: the *functional* grants (the real per-tool
+      tuning).** Once exec is no longer the gate, the next denial
+      wave is what the tools *do*: `ip` needs the `netlink` socket
+      classes (the module grants **no** netlink to `apse_app_t` at
+      all today) and `hostname <name>` needs `sys:sethostname`
+      (the capability side is fine — the app holds `CAP_SYS_ADMIN`
+      in its own userns/utsns). Decide each in the tuning loop
+      (zero-denial target); `netlink_audit_socket` stays denied
+      (8.7 note).
+      **Verify** (target machine, confined binary, enforcing):
+      (a) baseline before the change: `route` OK, `ip` /
+      `hostname` denied (reproduce the audit rows above);
+      (b) after: from an in-sandbox shell, `ip link`, `hostname`,
+      plus a few more dedicated-type tools — no `file:execute`
+      denials; (c) setuid: `su` / `pkexec` exec inside stays the
+      user's uid (stripped — no credential change); (d) the
+      generic-type transition (if accepted): `apse run --
+      /usr/bin/hostname` starts and the in-sandbox
+      `/proc/self/attr/current` shows `apse_app_t`; (e) tuning
+      loop through the netlink / sethostname wave to zero denials
+      for the tools actually used; (f) CI unaffected (the
+      test-suite binary is unrelabeled). Document the grant and
+      the setuid-stripping invariant in `selinux/README.md`.
 
 ## 8. Risks / things to watch
 
