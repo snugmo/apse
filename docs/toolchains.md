@@ -13,7 +13,10 @@ only under `/usr`, `/etc`, `/opt`; measured here: 2233 packages under
 `/usr`, 409 under `/etc`, 13 under `/boot`, **zero** under `/var` and
 `/opt`) is now verified mountable and write-safe on this kernel. The
 separate-prefix variant survives as the fallback (§4.2); the full-`/`
-overlay stays rejected (§4.1).
+overlay stays rejected (§4.1). `/var` gaps close per set with a
+tmpfiles manifest (§3.4), and a `dnf`-managed installroot — an
+ostree-style deployment in a user directory, mutated from *inside*
+the sandbox — is the opt-in power-user variant (§3.5).
 
 The question this documents: how does a sandboxed app get **build
 tools** — compilers, `make`, and the like — that are **not installed on
@@ -172,6 +175,30 @@ mode, the SELinux module)?
     `rpm -qL`), so a manifest is opt-in per set — the ostree pattern:
     declarations under `/usr` build the `/var` tree (§3.4).
 
+11. **`dnf install` on top of the host's installed state works — but
+    only inside the sandbox, and the "database copy" lives in `/usr`,
+    not `/var`.** On this (ostree-laid-out) F45, the rpm ndb is
+    `rpmdb.sqlite` at **`/usr/lib/sysimage/rpm`**, and `/var/lib/rpm`
+    is just a **symlink** to it. Verified: (a) a user-owned installroot
+    (reflink-copied `/usr` — which carries the db — plus a `/var/lib/rpm`
+    symlink recreated inside the root) seeded with the host's db shows
+    the full host state (`rpm -qa` → 2694 packages); (b) `dnf5
+    --installroot=<root>` as a plain user **runs through resolve and
+    download** against that state (minimal delta: `unifdef` → one 37
+    KiB RPM, no redundant deps) and dies only at the transaction:
+    **the rpm backend `chroot()`s into the installroot, and a plain
+    user on this host (CapEff=0) cannot `chroot`** ("Unable to change
+    root directory: Operation not permitted") — so the *host-side*
+    `dnf --installroot`/`rpm --root` recipe is out on a no-capability
+    user; (c) inside a self-created user ns (apse's exact A/B
+    construction), `chroot` into the root **succeeds**, and `rpm -qa
+    --root=/` run from inside it reads the seeded db through the
+    `/var/lib/rpm` symlink (2694). Consequence: "dnf install in the
+    overlay" is an *in-sandbox* operation (the sandbox is the
+    capability context that makes the chroot legal), and the db copy
+    goes into the store's `usr/` — which places it in the overlay upper
+    at the exact path the app's rpm reaches via the symlink (§3.5).
+
 ## 2. Where a toolchain can live (the visibility constraint)
 
 The private-home design (decisions #43/#44) has a consequence that
@@ -305,6 +332,46 @@ This is deliberately **not** a third overlay target: `/var` content is
 is the ostree semantics, and it keeps the two overlay mounts
 (`/usr`, `/etc`) as the only distribution surface.
 
+### 3.5 Variant: a `dnf`-managed installroot (opt-in per set, in-sandbox)
+
+Finding #11 shows the atomic-OS end-state of this feature: instead of
+curating extractions (§3.1), a set *is* an **installroot** — an
+ostree-style deployment in a user directory — that the user's `dnf`
+mutates *from inside the sandbox*:
+
+- **the set = a full installroot**: `/usr` (reflink clone of the
+  host's — which carries the db at `usr/lib/sysimage/rpm`), a **full
+  `/etc` shadow** (reflink; needed so rpm's config-file operations hit
+  upper files instead of hitting copy-up-EPERM on root-owned lowers),
+  the `/var/lib/rpm` symlink, and the §3.4 tmpfiles tree. On this
+  target the whole thing is ~13 GB apparent / near-zero real
+  (btrfs reflink) until something is written.
+- **the run**: a profile flag (e.g. `dnf = true`) makes apse grant
+  **`ReadWrite` on the `/usr`/`/etc` overlay paths and the `/var`
+  tree** for that one run (a new, explicitly opt-in grant class — the
+  default set stays read-only, §3.3). Inside, the user just runs
+  `dnf5 install <pkg>` (or `rpm -Uvh …`) — the default installroot
+  *is* the sandbox's `/`, i.e. the overlaid root: the
+  chroot is legal (the sandbox is a self-owned userns, finding #11c),
+  the transaction's file writes and the **db update land in the
+  overlay upper**, i.e. in the store — the set evolves across runs,
+  and every later run sees the new state.
+- **upgrades**: with the full `/usr` shadow, *upgrades of host
+  packages* work too (every path is an upper file; the root-owned
+  lower is never touched). Without the shadow, only *new* installs
+  work (finding #9: unlinks of root-owned lower files EPERM).
+- **integrity**: a half-finished transaction can corrupt the set. The
+  ostree answer, adopted: the store is a directory of
+  **deployments** (`<store>/sets/<N>/`), the profile points at the
+  last-known-good one, and a failed run leaves the previous
+  deployment intact. Single-writer per set (a personal single-user
+  machine; a lockfile if two runs share one).
+- **what it is not**: it is a *superset* of §3.1, not a replacement —
+  the cpio-extracted immutable set stays the default shared-store
+  baseline (zero new permissions, safe to share across instances);
+  the dnf-managed installroot is the power-user mode for sets the
+  user wants to extend live.
+
 ## 4. Alternatives considered
 
 ### 4.1 Full-`/` overlay — **rejected**
@@ -393,6 +460,14 @@ release-pinned and needs none of this.
   A `mkdir`/`chmod` the declared dirs directly (the conf format is
   trivially parseable; we'd only give up tmpfiles' other line types,
   which the toolchain sets don't use).
+- The §3.5 dnf variant adds the largest new surface of all: the app
+  execs `dnf5`/`rpm` (and whatever they exec) **and writes the store
+  type** — the module would need the app's file-lifecycle grants on
+  the store label to cover the transaction's writes
+  (create/unlink/rename across `usr/`, `etc/`, the db file) plus
+  `process { chroot }` (SELinux's explicit chroot permission — the
+  seccomp side is already open: step 9 chroots). Expect a tuning
+  loop, as for every other exec-world expansion (v2.32).
 
 ## 7. Landlock
 
@@ -410,6 +485,14 @@ release-pinned and needs none of this.
   treatment instead: a `Read` grant on the prefix, plus any
   tool-writable subdirectory `ReadWrite` — as the earlier draft of
   this section described.)
+- **The §3.5 dnf variant needs a new, opt-in grant class**: `Read`
+  **plus `Write` on `/usr` and `/etc`** (the overlay paths — the same
+  path-grant logic applies, the merged view becomes writable) and
+  `Read+Write` on the declared `/var` tree. This is the one place the
+  "store is immutable" invariant (§3.3) is deliberately broken, so it
+  must be explicit in the profile (`dnf = true` or similar), never a
+  default, and a set that takes it is a *deployment*, not a shared
+  source.
 
 ## 8. Open questions
 
@@ -427,7 +510,10 @@ release-pinned and needs none of this.
    `gcc` set = {`gcc`, `cpp`, `gcc-c++`, `binutils`, `glibc-devel`, …})
    and how is it kept in sync across releases — a checked-in manifest
    the user can extend, versus per-user manifests? This is the real
-   maintenance cost (finding #3).
+   maintenance cost (finding #3) — and it mostly evaporates for sets
+   that take the §3.5 dnf variant: dnf resolves the full closure
+   itself, so the "set" is just its initial package list plus the
+   release pin, and grows on demand from inside the sandbox.
 4. **`/opt`.** Zero packages install there on this (ostree-laid-out)
    system, so the overlay targets only `/usr` + `/etc`. If a set ever
    ships `/opt` content, unmask via a profile `ro_bind` and add `/opt`
