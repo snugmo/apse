@@ -1735,3 +1735,20 @@ write-up.
    `jt=0, jf=1` — "taken" falls to the *next* instruction, "not
    taken" skips one — encode by the desired fall-through, not the
    branch direction. — *task 8.7 (v2.33); `src/sandbox/policy.rs`.*
+
+81. **Unprivileged `mount(2)` in a self-created user+mount ns works
+   *before* the first `execve` and returns EPERM *after* it (single-extent
+   non-root uid map); never use `unshare(1)` for probe harnesses.** Decisive
+   A/B on 7.3.3/F45: one process does `unshare(CLONE_NEWUSER|CLONE_NEWNS)`
+   and writes the maps directly, then `rbind / → /` succeeds before the
+   `execve` and the identical operation after `execve` into bash fails with
+   EPERM ("must be superuser to use mount") — same SELinux context on both
+   sides, no AVC. That is why `unshare(1)` (which always `exec`s its
+   command) got EPERM on *every* mount, including plain binds, and produced
+   a false negative about unprivileged overlayfs. apse is immune by
+   construction: A (the ns creator, never exec'd) performs all rootfs steps
+   and B (a fork) mounts `/proc` before its own exec. Write probes for this
+   area in python/ctypes: one `unshare(2)`, direct `setgroups`/`uid_map`/
+   `gid_map` writes, all mounts before any exec (a forked child that mounts
+   before *its* exec works too). — *toolchain exploration;
+   `docs/toolchains.md` finding #8, commit `1de378f`.*
