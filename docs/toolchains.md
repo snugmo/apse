@@ -154,6 +154,24 @@ mode, the SELinux module)?
    store mutation, **zero new app permissions** — the store is
    effectively immutable to the app (§3.3).
 
+10. **The `/var` gap closes with `systemd-tmpfiles` offline mode.**
+    `systemd-tmpfiles --create --root=DIR --prefix=/var` run as a plain
+    user against a user-owned scratch root materializes exactly the
+    declared tree (verified on F45: `d` lines with numeric owners build
+    `/var/lib/…`, `/var/log/…` at the requested modes, exit 0). Two
+    gotchas: (a) with `--root=`, confs are searched at
+    `<root>/etc/tmpfiles.d` and `<root>/usr/lib/tmpfiles.d` — **not**
+    `<root>/tmpfiles.d` (a conf in the latter is silently ignored);
+    (b) user *names* in the conf must resolve on the host, else the
+    line fails (exit 65, nothing created) — a normalized conf with
+    numeric owners (the app's real uid) sidesteps this, and is also
+    what we want, since in the sandbox in-ns 0 is unmapped and the
+    state dirs must be the app's to write. The core toolchain set
+    (gcc, cpp, make, binutils, gdb, dnf5, p11-kit, ca-certificates,
+    glibc) declares **nothing** under `/var` (verified with
+    `rpm -qL`), so a manifest is opt-in per set — the ostree pattern:
+    declarations under `/usr` build the `/var` tree (§3.4).
+
 ## 2. Where a toolchain can live (the visibility constraint)
 
 The private-home design (decisions #43/#44) has a consequence that
@@ -249,6 +267,44 @@ keeps the one remaining hazard — concurrent copy-ups *racing* inside
 the kernel — out of a shared workdir; the kernel does not reject a
 shared workdir (observed), so this is hygiene, not a hard requirement.
 
+### 3.4 The `/var` gap — a tmpfiles manifest per set (no overlay)
+
+Some packages expect state dirs under `/var`. The ostree answer —
+packages ship `/usr/lib/tmpfiles.d/*.conf` declarations and the `/var`
+volume is built from them — is exactly what we want here (finding #10).
+Opt-in per set: the core toolchain set declares nothing under `/var`,
+so most sets need no manifest at all.
+
+For a set that does, the set carries a **normalized** tmpfiles conf
+(`d` lines; numeric owners = the app's real uid — the host may not
+have the users the packages name, and in the sandbox the dirs must be
+the app's to write):
+
+- **step 1 (host side, scratch):** stage the conf at
+  `<scratch>/varroot/usr/lib/tmpfiles.d/` (the `--root=` search path —
+  `<root>/tmpfiles.d` is *not* one) and run
+  `systemd-tmpfiles --create --root=<scratch>/varroot --prefix=/var`.
+  The whole `/var` tree is materialized in scratch — a **carry**, the
+  same zero-copy shape as §3.2's step 1 (bind, not copy).
+- **step 8 (masks):** the `/var` mask becomes a **bind of
+  `<scratch>/varroot/var`** instead of the empty tmpfs (and `/var` is
+  dropped from the mask list for that run). The app sees exactly the
+  declared tree and nothing else, all app-owned; the rest of the host
+  `/var` (including the rootfs scratch) stays hidden, as today.
+- **grants:** the existing `rw_binds`-style `allow_path` grants cover
+  the subdirs the app may write; the manifest can mark which, default
+  read-only — matching the `BASE_READ` posture.
+- **lifetime:** ephemeral by default — the tree lives under the
+  per-instance scratch and dies with the run (the "rebuilt, not
+  masked" pattern). A set that needs *persistent* `/var` state binds
+  those specific dirs into the per-app state tree instead (the §3.2
+  carry, as the home does) — one line in the manifest.
+
+This is deliberately **not** a third overlay target: `/var` content is
+*state*, not *distribution* — a fresh tree from declarations per run
+is the ostree semantics, and it keeps the two overlay mounts
+(`/usr`, `/etc`) as the only distribution surface.
+
 ## 4. Alternatives considered
 
 ### 4.1 Full-`/` overlay — **rejected**
@@ -325,6 +381,18 @@ release-pinned and needs none of this.
 - The per-instance `/etc` files (`apse_etc_t`, step 7.5) are bound on
   top of the overlay — the existing read-only rule carries over
   unchanged (verified the stacking in the unconfined probe).
+- The `/var` tree (§3.4) is built in scratch (`/var/tmp`), so its
+  inodes take scratch's label (`user_tmp_t`) uniformly, like every
+  other built dir — the app's grants on that type (the state-tree
+  lifecycle) cover read/write of the declared dirs. The one new
+  surface: `apse_t` (A) *exec'ing* `/usr/bin/systemd-tmpfiles` —
+  whether that transition lands in a domain that can still write the
+  scratch tree (or needs one `typetransition`/grant line) is a
+  tuning-loop question, same class as the v2.14/v2.32 gap closures.
+  If it turns out messy, the fallback is to skip the binary and have
+  A `mkdir`/`chmod` the declared dirs directly (the conf format is
+  trivially parseable; we'd only give up tmpfiles' other line types,
+  which the toolchain sets don't use).
 
 ## 7. Landlock
 
@@ -363,7 +431,9 @@ release-pinned and needs none of this.
 4. **`/opt`.** Zero packages install there on this (ostree-laid-out)
    system, so the overlay targets only `/usr` + `/etc`. If a set ever
    ships `/opt` content, unmask via a profile `ro_bind` and add `/opt`
-   as a third overlay target — the pattern is identical.
+   as a third overlay target — the pattern is identical. (`/var` is
+   closed, not open: §3.4 handles it with a tmpfiles manifest carry +
+   bind, no overlay target.)
 5. **Release-pinning policy.** Default toolchains to the host's release
    (no mixing, §5); document the sysroot escape hatch (§4.3) for
    cross-release needs.
