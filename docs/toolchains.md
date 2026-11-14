@@ -16,7 +16,10 @@ separate-prefix variant survives as the fallback (§4.2); the full-`/`
 overlay stays rejected (§4.1). `/var` gaps close per set with a
 tmpfiles manifest (§3.4), and a `dnf`-managed installroot — an
 ostree-style deployment in a user directory, mutated from *inside*
-the sandbox — is the opt-in power-user variant (§3.5).
+the sandbox — is the opt-in power-user variant (§3.5). §9 notes where this sits
+relative to the container ecosystem (reuse boundary, OCI as
+transport) — and repeats, deliberately, that none of it is set in
+stone yet.
 
 The question this documents: how does a sandboxed app get **build
 tools** — compilers, `make`, and the like — that are **not installed on
@@ -523,3 +526,90 @@ release-pinned and needs none of this.
 5. **Release-pinning policy.** Default toolchains to the host's release
    (no mixing, §5); document the sysroot escape hatch (§4.3) for
    cross-release needs.
+
+## 9. Relation to the container ecosystem (still under investigation)
+
+This feature touches a crowded corner of the Linux ecosystem —
+container runtimes, image builders, OCI — so it is worth writing down
+where apse sits relative to it. **Nothing in this section is set in
+stone.** The whole toolchain feature is still being investigated;
+expect the design in §3/§4 to evolve as development continues. This
+section records the current thinking, not an architecture.
+
+### 9.1 We are not reimplementing podman/docker — and not trying
+
+The structural difference is that **apse keeps the host's root
+filesystem as the base of the sandbox; container runtimes replace
+it.** Everything else follows from that one fact:
+
+- The app runs as its *real* uid with in-ns `0` **unmapped**
+  (decisions #9/#10). A container maps `0→0`, so the workload
+  *is* root inside its namespace. The apse app can never be root —
+  which is precisely what makes the overlay design (§3) work: the
+  "root-owned" lower is just a real uid-1000 file the app cannot
+  write, and there is nothing else to defend.
+- The product is **one known desktop app**, not N generic
+  workloads. The desktop-socket half (the tagged
+  `wp_security_context_v1` socket, the compositor's consent prompt,
+  the selection allowlist, the clipboard gate) is the actual reason
+  apse exists; no container tool does that half, and nothing in
+  podman/docker is drop-in-replaceable for it.
+- The closest shape-relatives are therefore **rpm-ostree and the
+  nix store**, not docker: an immutable, user-managed,
+  `/usr`-centric filesystem layer with deployment-style integrity
+  semantics, *over an existing host*. apse borrows that shape —
+  the extracted-package store, the read-only merge (§3.2), the
+  dnf-managed installroot as a "deployment" in a user directory
+  (§3.5) — and none of the code (neither ostree nor nix is on this
+  host, and neither is a fit for the in-process runtime).
+
+### 9.2 Reuse: the user-side build/distribution layer only
+
+Boundary rule: **the apse runtime stays 100% custom** — the
+in-process sandbox *is* the product. What is borrowed is the
+**user-side build/distribution layer**: tools that run on the host
+as the user to *produce* a store, and which **apse never links,
+spawns, or depends on at runtime**. apse consumes an already-built
+directory (or a tarball of one) and nothing else.
+
+| Component (this host) | Use for | Notes |
+|---|---|---|
+| `skopeo` 1.24.1 | Fetcher for the §3.1 download step: pulls a toolchain image from a registry (`docker://`) into a local dir layout | `skopeo copy docker://… dir:<store>/<N>`; the output is a plain directory, which is all apse sees |
+| `buildah` 1.45.1 / `podman` 6.1.3 | Builder for the compose step: a plain `Dockerfile`/buildah build runs `dnf`/`rpm` inside *their own* unprivileged userns and produces the store | Runs on the host, as the user, with no apse involvement; this is the host-side analogue of what §3.5 does in-sandbox |
+| `umoci` *(not installed yet)* | Pack/unpack between the OCI layout and a user tree — the §3.5 round-trip: a dnf-mutated installroot → re-packaged as an image | Optional; a plain `cp -a` of the store directory is the minimum substitute |
+| `cosign`/sigstore *(not installed yet)* | Optional: sign the store tarball/image for distribution | Purely distribution-side; apse never verifies anything |
+| `fuse-overlayfs` *(installed)* | Fallback for the workdir constraint (open #1): if the upper and workdir cannot share a real filesystem on a multi-volume host, fuse-overlayfs does not care | Open: where the FUSE server would run (it is another process inside the ns and needs its own grants) — not settled |
+| `runc`, `crun`, `bwrap` | **Not reusable** | Different process model: they build a namespace for arbitrary container workloads from scratch. apse's in-process sandbox — rebuilt rootfs, single-extent uid map, tagged socket, the supervisor — is the product and is already written |
+| `rpm-ostree`, `nix` | **Concept only** | The shape is borrowed (immutable `/usr` store, deployments, content-addressed layers); no code reuse |
+
+### 9.3 OCI images: transport yes, runtime no
+
+Use the OCI image format **only as the packaging/distribution
+format** for toolchain stores. apse never sees OCI: at runtime it
+sees a plain directory (the store), and the overlay mount (§3.2)
+does not care how that directory was produced.
+
+- **Store shape.** One **base image per release** (the shared `/usr`
+  shadow carrying the rpm db, the full `/etc` shadow, the
+  `/var/lib/rpm` symlink, the tmpfiles tree — the §3.5 seed, ~13 GB
+  apparent / near-zero real on btrfs) plus **small delta layers per
+  set** (extracted RPMs, §3.1). This is exactly the container world's
+  base-image + app-layer model, and it means every set on a release
+  shares one base.
+- **Build path A (host-side).** `buildah`/Dockerfile runs the
+  dnf/rpm compose step in its own unprivileged sandbox; `skopeo
+  copy` to dir (or `umoci unpack`) yields the store directory. Best
+  fit for the *curation* side: checked-in manifests, CI, registry
+  distribution.
+- **Build path B (in-sandbox, §3.5).** A dnf-mutated installroot is
+  packed back out, closing the loop: "evolve the set from inside the
+  sandbox" and "redistribute the set" become one feature.
+- **What we deliberately refuse to absorb.** No OCI *runtime*
+  (runc/crun). No *layer-mounting inside the sandbox* — the store
+  is a **flattened** directory (one overlay upper, one mount, not a
+  stack of N layer mounts). No image *config semantics*
+  (entrypoint, env, labels, user have no meaning for a toolchain
+  store; the profile TOML is that layer).
+- **Minimum viable input.** A tarball of the store directory — or
+  the directory itself. OCI is a nicer transport (registry,
+  signatures, cross-machine), not a precondition.
