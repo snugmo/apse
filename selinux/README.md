@@ -51,8 +51,9 @@ the module uses them; otherwise the file is bare statements.
 
 - `apse_exec_t` — file type for the installed `apse` binary
   (`/usr/local/bin/apse` or `/usr/bin/apse`; the two `(filecon …)`
-  statements at the bottom of the CIL, installed in the same command
-  as the rules). A *standard application executable*: it carries
+  statements for it at the bottom of the CIL, installed in the same
+  command as the rules — a third filecon, for the per-app state
+  tree, sits alongside them). A *standard application executable*: it carries
   the same attribute set the base policy gives `ssh_exec_t` /
   `useradd_exec_t` / `sudo_exec_t` (`file_type`, `exec_type`,
   `entry_type`, `application_exec_type`, `non_auth_file_type`,
@@ -116,8 +117,23 @@ the module uses them; otherwise the file is bare statements.
   (the *parent's* own type) makes everything beneath it inherit:
   one rule labels the whole tree, any depth, on any fs. The range
   takes the parent's low level (`s0`, dominated by every `s0:cN`).
-  Because a module type joins no base attribute, the tree's access
-  is governed by this module's grants alone: `apse_t` (creation,
+  The *static* half of the labeling: `filecon` does not label
+  created inodes here, but it *does* register the expected label
+  that `matchpathcon`/`restorecon` compute from the filecon table
+  alone — the filetrans is invisible to them. Without a matching
+  entry the nearest match for the whole tree is the gnome module's
+  broader `HOME_DIR/\.local(/.*)?` → `gconf_home_t`, and
+  `restorecon -R` would drag it back off `apse_state_t` (the
+  reverse of S's migration walk); so the module carries a third
+  filecon (decision #46): `HOME_DIR/\.local/state/apse(/.*)?` →
+  `apse_state_t` (the 3.11 `HOME_DIR` keyword expands into
+  `file_contexts.homedirs`, `system_u` into the user's selinux user;
+  the deeper path beats the broader catch-all, as with
+  `.local/share`). A *custom* `XDG_STATE_HOME` outside the default
+  location is out of reach of any filecon — exactly what S's
+  relabel walk self-heals. Because a module type joins no base
+  attribute, the tree's access is governed by this module's grants
+  alone: `apse_t` (creation,
   the 0700 chmod, the setxattr relabel walk, and the `mounton` A's
   private-home binds land on), `apse_app_t` (the full file
   lifecycle, incl. fish's `lock`/`watch` and the
@@ -684,15 +700,21 @@ sudo semodule -i selinux/apse.cil
 sudo restorecon -v /usr/local/bin/apse     # confined mode (see above)
 ```
 
-The CIL carries the two `(filecon …)` statements for the binary
+The CIL carries three `(filecon …)` statements: two for the binary
 (`system_u:object_r:apse_exec_t:s0` — the MCS category is a
-*process* label, never a file label). On 3.11 the store reads file
-contexts straight out of the module CIL (libsemanage calls
-`cil_filecons_to_string` after `cil_compile` and writes them to the
-policy's `file_contexts`), so the file context is *in* the module and
-`semodule -r apse` removes it too. `restorecon` (or
+*process* label, never a file label) and one for the per-app state
+tree (decision #46). On 3.11 the store reads file contexts straight
+out of the module CIL (libsemanage calls `cil_filecons_to_string`
+after `cil_compile`, then `semanage_split_fc` routes the
+`HOME_DIR`-prefixed one to the separate `file_contexts.homedirs`
+template and the rest to the main `file_contexts`), so the file
+contexts are *in* the module and `semodule -r apse` removes them all.
+The state-tree filecon is expanded by `genhomedircon` (`HOME_DIR` →
+`/home/[^/]+/…`, `system_u` → the user's selinux user) into
+`file_contexts.homedirs.bin`, which is what `restorecon`/
+`matchpathcon` consult for the tree. `restorecon` (or
 `chcon -t apse_exec_t`) is what actually relabels the installed
-binary — `semodule -i` only registers the context.
+binary — `semodule -i` only registers the contexts.
 
 **Remove:**
 

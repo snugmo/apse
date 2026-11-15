@@ -1836,3 +1836,32 @@ write-up.
    self-bind, both raw and inside a systemd user scope. — *setuid-in-
    sandbox investigation (2026-11-15); production `apse run` strace
    vs probe harnesses.*
+
+85. **On 3.11, a filecon carrying the `HOME_DIR` template keyword is
+   routed to `file_contexts.homedirs`, not the main `file_contexts`
+   — and `matchpathcon`/`restorecon` consult *both*, so it is fully
+   effective.** The state-tree filecon (decision #46) is
+   `HOME_DIR/\.local/state/apse(/.*)?` → `apse_state_t`. On
+   `semodule -i`, libsemanage runs `semanage_split_fc` over the CIL's
+   `cil_filecons_to_string` output: any line beginning with
+   `HOME_DIR`/`HOME_ROOT`/`ROLE`/`USER` goes to the separate
+   `file_contexts.homedirs` template, which `genhomedircon` expands
+   (`HOME_DIR` → `/home/[^/]+/`, `system_u` → the user's selinux user,
+   e.g. `unconfined_u`) into `file_contexts.homedirs.bin`; the other
+   filecons go to the main `file_contexts`. The 3.11 file backend
+   (`selabel_open(SELABEL_CTX_FILE)`, used by `matchpathcon`/
+   `restorecon`) opens *both* `.bin` files and descends the path tree
+   to the **deepest literal match** — so the deeper
+   `…/state/apse(/.*)?` beats the gnome module's broader
+   `HOME_DIR/\.local(/.*)?` → `gconf_home_t`, exactly the way
+   `.local/share` → `data_home_t` beats `.local`. In the regex,
+   backslashes escape only the specials you mean literally (the `.`
+   in `\.local`); `(/.*)?` is a bare group. Verified:
+   `restorecon -nvR ~/.local/state/apse/` is silent, `matchpathcon`
+   on a deep file returns `apse_state_t`, and the sibling
+   `~/.local/state/other` still resolves to `gconf_home_t`. A
+   *custom* `XDG_STATE_HOME` outside `~/.local/state` is unreachable
+   by any filecon — S's relabel walk self-heals that case. —
+   *state-tree filecon investigation (2026-11-15); the 3.11
+   libsemanage/libselinux sources (`semanage_split_fc`,
+   `matchpathcon`) and the installed module's CIL.*
