@@ -48,7 +48,13 @@
 ; `validatetrans` constraint, and `associate` (this SID → the
 ; mount's SID), and the pre-check label read (`getxattr
 ; "security.selinux"`) carries no MAC check
-; (`selinux_inode_getsecurity` only converts the inode's SID).
+; (`selinux_inode_getsecurity` only converts the inode's SID). The
+; filecon at the bottom of the file (decision #46) is the other
+; half of the labeling story: `matchpathcon`/`restorecon` compute
+; the *expected* label of an existing path from the filecon table
+; alone — the filetrans is invisible to them — and without it the
+; gnome module's broader `HOME_DIR/\.local(/.*)?` is the best
+; match for the whole tree.
 (type apse_state_t)
 (roletype object_r apse_state_t)
 ; task 8.10: the per-instance /etc files (`hosts`, `hostname`).
@@ -1352,3 +1358,25 @@
 (allow apse_exec_t fs_t (filesystem (associate)))
 (filecon "/usr/local/bin/apse" file (system_u object_r apse_exec_t ((s0) (s0))))
 (filecon "/usr/bin/apse" file (system_u object_r apse_exec_t ((s0) (s0))))
+; the per-app state tree (decision #46): `matchpathcon`/`restorecon`
+; compute the *expected* context of an existing path from the
+; filecon table alone — the named filetrans that labels the
+; tree's inodes is invisible to them — so without this entry the
+; nearest match for everything under `$HOME/.local/state/apse` is
+; the gnome module's broader `HOME_DIR/\.local(/.*)?` →
+; `gconf_home_t`, and `restorecon -R` drags the whole tree back off
+; `apse_state_t` (the reverse of S's one-time migration walk). The
+; deeper path beats the broader catch-all the way the gnome
+; module's own `HOME_DIR/\.local/share(/.*)?` beats
+; `HOME_DIR/\.local(/.*)?` (the 3.11 matcher descends the path
+; tree to the deepest literal match; verified: `~/.local/share` is
+; `data_home_t` while `~/.local` stays `gconf_home_t`). `HOME_DIR`
+; is the 3.11 template keyword the store expands into
+; `file_contexts.homedirs` on install (`system_u` comes out as the
+; user's selinux user — `unconfined_u` here — exactly the label
+; S's relabel walk writes), and `any` covers the tree's dirs,
+; files, symlinks, sockets and fifos as with the gnome tree
+; entries. A *custom* `XDG_STATE_HOME` outside the default
+; location is out of reach of any filecon: that is exactly what
+; S's relabel walk self-heals (the `relabel_state_tree` comment).
+(filecon "HOME_DIR/\.local/state/apse(/.*)?" any (system_u object_r apse_state_t ((s0) (s0))))
