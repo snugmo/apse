@@ -1,7 +1,7 @@
 # Adding build toolchains to the sandbox (no host root) — design sketch
 
-Status: **exploration / feasibility** (written and revised 2026-11-14,
-same day). Every finding below was hands-on-verified this session on the
+Status: **exploration / feasibility** (written 2026-11-14;
+revised 2026-11-15 — §10 pins the definition contract).
 Fedora 45 target — unprivileged user (uid 1000, `unconfined_t`), kernel
 `7.3.3-300.fc45.x86_64`, `/` + `/home` + `/var` on one btrfs volume
 (`/dev/vda3`), `/tmp` on tmpfs, `dnf5` 5.4.7, `rpm2cpio`/`cpio` present,
@@ -18,8 +18,11 @@ tmpfiles manifest (§3.4), and a `dnf`-managed installroot — an
 ostree-style deployment in a user directory, mutated from *inside*
 the sandbox — is the opt-in power-user variant (§3.5). §9 notes where this sits
 relative to the container ecosystem (reuse boundary, OCI as
-transport) — and repeats, deliberately, that none of it is set in
-stone yet.
+transport). **§10 pins the definition contract** (2026-11-15): a
+toolchain is *defined* by a user build script or Dockerfile, built
+by `buildah` over the release base image, and mounted read-only —
+the §3.1 curated set table is superseded as a definition
+mechanism, though it survives as the pure-RPM reference case.
 
 The question this documents: how does a sandboxed app get **build
 tools** — compilers, `make`, and the like — that are **not installed on
@@ -236,6 +239,13 @@ to participate in the rootfs, only to be *named* and *curated*.
 
 ### 3.1 Fetch & store (user side, no root)
 
+> **Superseded as the definition surface (2026-11-15, §10).** The
+> set→packages table is no longer the maintenance surface: a
+> toolchain is *defined* by a user build script (or Dockerfile),
+> and the table simply becomes *what the script installs* (the
+> pure-RPM reference case). The extraction mechanics below stay
+> valid — a script that wants them just runs them.
+
 A stable user-owned store, e.g.
 `$XDG_DATA_HOME/apse/toolchains/<set>/`, with `usr/` and `etc/`
 subtrees, produced by `dnf5 download --resolve --destdir` per package +
@@ -250,6 +260,12 @@ Sets are **immutable once built** (a new set = a new directory, the
 ostree deployment pattern); a profile references a set by name.
 
 ### 3.2 Build wiring (apse side) — one new rootfs step between 2 and 3
+
+> **Runtime revision (2026-11-15, §10.4).** The upper's content is
+> now sourced from the built toolchain's expanded root, and the
+> target shape is a single read-only overlay over the whole
+> self-bound root (no upper, no workdir); this section's
+> two-target shape stands as the verified fallback.
 
 For a run whose profile selects set `N` (a new profile field, e.g.
 `toolchain = "gcc"`):
@@ -505,10 +521,18 @@ release-pinned and needs none of this.
    upper) is satisfied on this target by scratch (`/` and `/home` are
    one btrfs volume); on a multi-volume host the workdir must live
    inside the store tree instead.
+   — *Resolved by §10.3 (2026-11-15): the store lives at
+   `/var/tmp/.apse/toolchains/<name>/` (the §28 scratch
+   convention); with the no-upper runtime shape the workdir
+   constraint itself dissolves.*
 2. **CLI surface.** A first-class `apse toolchain` subcommand
    (list/add/remove, driving `dnf5 download` + extraction; sets
    immutable) vs. a profile field plus a documented `dnf5` recipe the
    user runs by hand.
+   — *Resolved by §10.3 (2026-11-15): a first-class `apse toolchain`
+   build/list/rm subcommand, building from a script/Dockerfile; the
+   profile field and the ad-hoc `run --toolchain` select a built
+   name.*
 3. **Curation ownership.** Who maintains the set→packages table (the
    `gcc` set = {`gcc`, `cpp`, `gcc-c++`, `binutils`, `glibc-devel`, …})
    and how is it kept in sync across releases — a checked-in manifest
@@ -517,12 +541,20 @@ release-pinned and needs none of this.
    that take the §3.5 dnf variant: dnf resolves the full closure
    itself, so the "set" is just its initial package list plus the
    release pin, and grows on demand from inside the sandbox.
+   — *Resolved by §10.1 (2026-11-15): the table is replaced by the
+   user's definition script; the maintenance cost moves to the
+   script's own content, by the user's choice.*
 4. **`/opt`.** Zero packages install there on this (ostree-laid-out)
    system, so the overlay targets only `/usr` + `/etc`. If a set ever
    ships `/opt` content, unmask via a profile `ro_bind` and add `/opt`
    as a third overlay target — the pattern is identical. (`/var` is
    closed, not open: §3.4 handles it with a tmpfiles manifest carry +
    bind, no overlay target.)
+   — *Resolved by §10.4 (2026-11-15): the target runtime shape
+   overlays the toolchain root over the whole self-bound `/`, so
+   any prefix a toolchain ships — `/opt` included — shadows
+   automatically; only the verified fallback shape still needs the
+   unmask + third target.*
 5. **Release-pinning policy.** Default toolchains to the host's release
    (no mixing, §5); document the sysroot escape hatch (§4.3) for
    cross-release needs.
@@ -613,3 +645,178 @@ does not care how that directory was produced.
 - **Minimum viable input.** A tarball of the store directory — or
   the directory itself. OCI is a nicer transport (registry,
   signatures, cross-machine), not a precondition.
+
+
+## 10. Toolchain definition: the build contract (pinned 2026-11-15)
+
+§3 pins *where* a toolchain lives inside the sandbox (a scoped
+overlay over the live rootfs) but left *how its content is defined*
+to a curated set→packages table (§3.1). That table is the real
+maintenance cost of the feature (finding #3) and it assumes an RPM
+world. **The definition is now a build contract:** a toolchain is
+defined by a user **build script** (or a Dockerfile), executed
+against the **release base image** by `buildah`, producing an OCI
+image whose expanded root is what the sandbox overlays. The table
+evaporates: the script *is* the curation, and it may use any
+package manager, any download, any custom construct — the
+rpm-ostree-style "overlay RPMs on the base OS" is one of its many
+forms, not its definition.
+
+### 10.1 The contract
+
+A toolchain is a triple — **(definition file, base image, arch)** —
+whose build product is an **OCI image**:
+
+- **The definition file** is one of two shapes:
+  - a **shell script** — apse wraps it into a three-line
+    Dockerfile and builds that:
+
+    ```dockerfile
+    FROM <base>
+    COPY <script> /tmp/apse-build.sh
+    RUN /bin/sh /tmp/apse-build.sh
+    ```
+
+  - a **Dockerfile** — built as-is.
+  In either case the script's filesystem *is* the artifact: it
+  installs into `/` however it likes — `dnf install` (the
+  rpm-ostree case), `apt`/`pacman` (non-RPM bases), `curl | tar`
+  binary drops, `rustup`/`cargo` bootstraps, hand-placed files,
+  patches, generated configs. The only requirement is that it runs
+  in a root shell of an unprivileged chroot — which is exactly the
+  range of things `buildah --isolation chroot` can run.
+- **The base image** is **one per release**: the host OS root in
+  OCI form (§9.3's per-release base — the same `/usr` layout as the
+  live system, so the paths in the built layer align with what the
+  runtime overlays onto). Produced once per release by the same
+  machinery (a dnf root or a packed live `/` — §9.3 build path B).
+  A definition that wants dnf to resolve a closure gets it from the
+  base (the rpm db travels with the image, §3.5).
+- **The output** is an OCI **dir** image in the apse store plus its
+  **expanded root** (`umoci unpack` → a single flat directory). The
+  expanded root is what the sandbox mounts (§10.4); OCI is
+  transport only, exactly as §9.3 rules.
+
+### 10.2 The builder: `buildah bud`, unprivileged, build-time
+
+One builder for both definition shapes: `buildah bud --isolation
+chroot` run as the user (`--network` gated: on by default — the
+point is downloading; `none` for the offline / dnf-cache case).
+`chroot` isolation is a child userns + chroot — no kernel mount
+features required, so the build works on any host, and the
+script's reach ends at the build root: a hostile or broken script
+can do anything to a throwaway tree and nothing to the host.
+`buildah` sits exactly on the §9.2 reuse line: host-side,
+user-run, never spawned or linked by apse.
+
+Build-time rather than runtime, for four reasons:
+
+- **build once, use many** — the cache key is
+  `sha256(definition bytes ‖ base digest ‖ arch)`; identical
+  inputs never rebuild. A build runs into a scratch dir and the
+  store entry is replaced only on success, so a failed build
+  leaves the previous artifact in place (the deployment-style
+  integrity of §3.5);
+- **no network at sandbox start** — the runtime path is a pure
+  mount;
+- **reproducible and signable** — the artifact is an OCI image
+  (`cosign` sign/verify, §9.2), and a plain tarball of the expanded
+  root remains the minimum viable input (§9.3);
+- **no new trust boundary** — the build runs in the same class of
+  unprivileged userns the sandbox itself uses.
+
+### 10.3 Store, cache, CLI
+
+- **Store:** `/var/tmp/.apse/toolchains/<name>/` (the §28 scratch
+  convention — on `/var/tmp`, hidden from the sandbox by the `/var`
+  mask and the landlock floor, mode 0700): the OCI dir image, the
+  expanded root, and a `manifest` recording the name, definition
+  hash, base digest, and arch.
+- **Cache:** a run whose profile selects toolchain `N` (the new
+  profile field, §3.2) resolves `N` in the store: a missing entry,
+  or a definition-hash / base-digest mismatch, triggers a build;
+  otherwise the existing expanded root is mounted as-is.
+- **CLI:** `apse toolchain build <definition> [--name N] [--base
+  B] [--network auto|host|none]`, `apse toolchain list`, `apse
+  toolchain rm <name>`; the profile's `toolchain` field (a name, or
+  a path — a path builds on demand); ad-hoc `run --toolchain
+  <name>`. This resolves §8#2.
+
+### 10.4 The runtime mount (step 2.5, revised)
+
+The runtime consumer of a built toolchain is a **read-only overlay
+over the live rootfs** — the rpm-ostree shape, mounted at the root
+instead of per prefix:
+
+    step 2:   self-bind /                     (the live OS, a mount we own)
+    step 2.5: overlay over /
+              lowerdir = <store>/N/root : /
+                         (the toolchain first, the live root second)
+
+The toolchain's files **shadow** same-path live files (the earlier
+lower wins); everything else — `/bin`, `/lib`, `/proc`, the home,
+the rest of the live OS — **passes through** from the self-bound
+second lower. The second lower resolves, at mount time, to the
+step-2 self-bind — the top of the stack at `/` when the overlay is
+mounted — a mount *we* created, not the original init-ns root
+(whose clone is the one unprivileged operation this kernel
+rejects, LESSONS #83).
+
+One mount, no `upperdir`, no `workdir`: the layer is immutable by
+construction — there is nothing to copy up into, so the §3.3
+copy-up hazard and its per-instance workdir hygiene both dissolve
+(the store is shared read-only across instances, as §3.3 argued it
+safe) — and teardown has nothing to clean up (the mount namespace
+dies with the process; the store entry stays put). Every later
+rootfs step mounts *on top of* the overlay, so it is unaffected,
+including the step-7.5 `/etc/hosts`/`hostname` identity binds,
+which remain the last word at their paths.
+
+Compared with the §3.2 two-target shape (`/usr` + `/etc`), the
+whole-root overlay also covers **`/opt`, `/usr/local`, and any
+other prefix** a toolchain ships, with no extra machinery — §8#4
+closes itself.
+
+**Verification status (7.3.3-300.fc45, this session):** a
+*plain-directory* lower in `/var/tmp` works unprivileged in a
+single-extent `1000:1000:1` userns (probed with upper+workdir; the
+no-upper read-only view is the simpler case); a *bind-created*
+mount as the sole lower works (the §3.2 scratch-bind shape;
+finding #8); **a two-lower list whose second entry is the step-2
+self-bind is the one unverified form** — the known `lowerdir=/`
+EINVAL is about the *original* init-ns root mount, and the
+self-bind is a different, creator-owned object, but that exact
+shape has not been probed yet. **Fallback, if it fails:** the
+verified §3.2 shape — per-target overlays at `/usr` and `/etc`,
+lower = the scratch bind of the live target, upper = the
+corresponding subtree of the toolchain root, per-instance workdir
+in the scratch, read-only by the landlock grants — with `/opt`
+handled by the §8#4 unmask + third target. The build contract
+(§10.1–10.3) is identical in both cases; only the mount shape
+differs.
+
+### 10.5 What this resolves
+
+- **§3.1 (the set table):** superseded as the definition surface.
+  The `dnf5 download` + `rpm2cpio` extraction survives as *a*
+  reference definition (the pure-RPM case — a script that just
+  runs it) and as the inner mechanics of §3.5.
+- **§3.4 (the `/var` gap):** unchanged — it stacks on top of
+  whatever the `/var` view is (the target shape, the fallback, or
+  no toolchain at all).
+- **§3.5 (dnf-managed installroot):** unchanged in role — the
+  power-user mode for *live* evolution inside the sandbox (its
+  write paths need an upperdir, which the §10.4 read-only shape
+  deliberately lacks). A set evolved that way is re-packed out
+  (§9.3 path B) and re-enters the system as an ordinary built
+  artifact — the loop closes.
+- **§8 open questions:** #1 (store location), #2 (CLI), #3
+  (curation), #4 (`/opt`) resolved as marked above; #5 (release
+  pinning) stays open as written.
+- **Security:** the build's containment is the child-userns chroot
+  (§10.2); the runtime adds no new attack surface (the layer is
+  part of the already-contained world, and the store sits behind
+  the `/var` mask + landlock floor). Setuid binaries inside a
+  toolchain are inert in the app for the namespace-level reasons
+  of LESSONS #82 — a toolchain cannot grant what the uid map
+  already denies.
