@@ -81,8 +81,12 @@ phase 8.1).**
     `-listenfd` path adopts the fd as-is) and hands it over as
     `-listenfd` (non-CLOEXEC); a socketpair as `-displayfd` is the
     readiness gate (display number cross-checked against
-    `--display`); `-auth` (MIT cookie), `-nolisten tcp`, `-rootless`
-    by default. The lifetime backstop for a SIGKILL'd satellite is
+    `--display`); the X socket and MIT auth file live in the
+    instance dir's `x/` subdir (decision #47 — `apse_xsocket_t` in
+    confined mode; the socket file itself stays `apse_t` via the
+    kernel's `selinux_sock_graft`); `-auth` (MIT cookie),
+    `-nolisten tcp`, `-rootless` by default. The lifetime backstop
+    for a SIGKILL'd satellite is
     `PR_SET_PDEATHSIG` (set in `pre_exec`, re-armed in the child by
     the shared `pdeathsig` shim — the SELinux transition into
     `xserver_t` clears it on exec; decision #37, LESSONS #19-20)

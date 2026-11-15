@@ -1865,3 +1865,37 @@ write-up.
    *state-tree filecon investigation (2026-11-15); the 3.11
    libsemanage/libselinux sources (`semanage_split_fc`,
    `matchpathcon`) and the installed module's CIL.*
+
+86. **On this kernel, a `PF_UNIX` socket's bound inode carries the
+   *creator's* label, not the parent dir's — a filetrans on the
+   socket's home dir does not touch the socket file.**
+   `selinux_sock_graft` (`security/selinux/hooks.c`, 7.2.15) runs at
+   `bind(2)`: for `PF_UNIX` (and IPv4/6) it copies the socket
+   *object's* SID — the creator's — onto the bound inode, and the
+   socket object keeps that SID for its life; the inode's label
+   therefore tracks the creator's domain, never the parent dir's
+   filetrans. Decision #47 (`apse_xsocket_t`) is built on it: the
+   named filetrans labels the `x/` subdir (born the module's type),
+   and the no-rule default (`security_compute_sid`) makes the MIT
+   auth file — created under it by `xserver_t` — inherit the label,
+   but the X socket file is `apse_t` (its creator), so `xserver_t`,
+   which holds the listener purely by fd and never opens it by
+   path, needs no `sock_file`/`unix_stream_socket` grant on the new
+   type at all — the three pre-change `xserver_t → user_tmp_t`
+   base→base rules (auth-file `file`, socket `sock_file` +
+   `unix_stream_socket`) collapse into one module→module grant.
+   Corollaries: the self-heal of a stale pre-filetrans `x/` (the
+   new-binary/old-module window) is remove+recreate, not a
+   setxattr relabel (a relabel would need `relabelto`, which the
+   module deliberately does not grant; the liveness probe protects
+   a live X server), and the static-half filecon
+   (`/run/user/%{USERID}/…` → the type; `%{USERID}` → `[0-9]+` in
+   3.11's `file_contexts.homedirs`) registers the *expected* label
+   for `matchpathcon`/`restorecon`, which the filetrans alone never
+   does — without it these contents are context-less under the
+   `<<none>>` catch-all, and a broader `/run/user` entry from any
+   module could drag the subtree off the type (verified with the
+   module installed: `matchpathcon` on the `x/` dir and auth file
+   → `apse_xsocket_t`). — *`apse_xsocket_t` design (2026-11-15,
+   decision #47); the 7.2.15 kernel source (`selinux_sock_graft`)
+   and the installed 3.11 filecon table.*

@@ -52,8 +52,9 @@ the module uses them; otherwise the file is bare statements.
 - `apse_exec_t` — file type for the installed `apse` binary
   (`/usr/local/bin/apse` or `/usr/bin/apse`; the two `(filecon …)`
   statements for it at the bottom of the CIL, installed in the same
-  command as the rules — a third filecon, for the per-app state
-  tree, sits alongside them). A *standard application executable*: it carries
+  command as the rules — two more filecons sit alongside them: the
+  per-app state tree (decision #46) and the `x/` socket subdir
+  (decision #47)). A *standard application executable*: it carries
   the same attribute set the base policy gives `ssh_exec_t` /
   `useradd_exec_t` / `sudo_exec_t` (`file_type`, `exec_type`,
   `entry_type`, `application_exec_type`, `non_auth_file_type`,
@@ -164,13 +165,59 @@ the module uses them; otherwise the file is bare statements.
   the host's `net_conf_t` (`hosts`) and `hostname_etc_t`
   (`hostname`): `apse_t` needs `getattr` (the build's
   target-exists check stats them) and `mounton`.
+- `apse_xsocket_t` — the `x/` subdir of the per-instance runtime
+  dir (decision #47): the home of the X socket and the MIT auth
+  file the `xwayland` satellite places there
+  (`$XDG_RUNTIME_DIR/apse/<inst>/x/`, a `user_tmp_t` tree). The
+  dedicated type exists so the satellite's `xserver_t` needs no
+  allow rule between two base types (pre-change:
+  `xserver_t → user_tmp_t` for the auth file and the socket).
+  Labeling is the same mechanics as `apse_state_t`: the named
+  filetrans `(typetransition apse_t user_tmp_t dir "x"
+  apse_xsocket_t)` (the satellite is `apse_t` in confined mode)
+  makes the subdir born the module's type, and the no-rule default
+  of `security_compute_sid` (the parent's own type) makes the MIT
+  auth file — which `xserver_t` creates and writes under it during
+  startup — inherit the label. The *socket file* is the one
+  exception: on `bind(2)` the kernel's `selinux_sock_graft`
+  (PF_UNIX) copies the socket object's SID — the creator's,
+  `apse_t` — onto the bound inode, and the object keeps that SID
+  for its life, so the file and every socket-class check on it
+  land on `apse_t`, not here. `xserver_t` therefore holds the
+  listener purely by fd (`fd:use` on `apse_t`, an existing rule)
+  and never opens the socket by path — it needs no
+  `sock_file`/`unix_stream_socket` grant on `apse_xsocket_t` at
+  all. The static half, as with the state tree: the filecon
+  (`/run/user/%{USERID}/apse/[^/]+/x(/.*)?` — `%{USERID}` is the
+  3.11 template keyword the store expands per user into `[0-9]+`,
+  the same route as the dbus/gnome modules' own `/run/user`
+  entries) registers the expected label, so `matchpathcon`/
+  `restorecon` see the module's type for the subdir and its
+  contents (verified: `matchpathcon` on the `x/` dir and the auth
+  file → the type) and the deeper path beats any broader
+  `/run/user` catch-all. A stale pre-filetrans `x/` (the
+  mixed-version window: new binary, old module) is healed by the
+  satellite itself: it liveness-probes the socket (a live X server
+  is never disturbed) and remove+recreates the dir, so the
+  filetrans labels the replacement — no `relabelto` grant needed.
+  Access: `apse_t` (creation, the 0700 chmod, the stale-dir
+  remove+recreate, teardown), `xserver_t` (the auth file only:
+  create/write — module→module), `apse_app_t` (read-only: dir
+  traversal and reading the auth file; the app reaches the socket
+  by path — `connectto` on the existing `apse_app_t → apse_t`),
+  and `unconfined_t` (the user's own inspection and cleanup).
 - `xserver_t` — stock policy transitions `unconfined_t → xserver_t`
   on `xserver_exec_t`, but in confined mode the satellite is
   `apse_t`, so the module adds the `apse_t → xserver_t`
   transition plus `xserver_t` access to the X socket and MIT auth
-  file it places in the per-instance dir (precautionary — the Phase
-  7.3 e2e logged no denials in unconfined mode; the satellite has
-  not yet run in enforcing mode).
+  file it places in the instance dir's `x/` subdir (decision #47):
+  the auth file is `apse_xsocket_t` (a module→module grant — that
+  is the point of the dedicated type; the pre-change rules hit
+  `user_tmp_t`), and the socket file is `apse_t` (the
+  `selinux_sock_graft` above), held purely by fd (`fd:use` /
+  `unix_stream_socket` on `apse_t`, existing rules). Precautionary
+  — the Phase 7.3 e2e logged no denials in unconfined mode; the
+  satellite has not yet run in enforcing mode.
 
 **Roles:** both `apse_t` and `apse_app_t` are associated with
 `unconfined_r` (the spawner's role, as container-selinux does with
@@ -700,19 +747,21 @@ sudo semodule -i selinux/apse.cil
 sudo restorecon -v /usr/local/bin/apse     # confined mode (see above)
 ```
 
-The CIL carries three `(filecon …)` statements: two for the binary
+The CIL carries four `(filecon …)` statements: two for the binary
 (`system_u:object_r:apse_exec_t:s0` — the MCS category is a
-*process* label, never a file label) and one for the per-app state
-tree (decision #46). On 3.11 the store reads file contexts straight
-out of the module CIL (libsemanage calls `cil_filecons_to_string`
-after `cil_compile`, then `semanage_split_fc` routes the
-`HOME_DIR`-prefixed one to the separate `file_contexts.homedirs`
-template and the rest to the main `file_contexts`), so the file
-contexts are *in* the module and `semodule -r apse` removes them all.
-The state-tree filecon is expanded by `genhomedircon` (`HOME_DIR` →
-`/home/[^/]+/…`, `system_u` → the user's selinux user) into
-`file_contexts.homedirs.bin`, which is what `restorecon`/
-`matchpathcon` consult for the tree. `restorecon` (or
+*process* label, never a file label), one for the per-app state
+tree (decision #46), and one for the `x/` socket subdir (decision
+#47). On 3.11 the store reads file contexts straight out of the
+module CIL (libsemanage calls `cil_filecons_to_string` after
+`cil_compile`, then `semanage_split_fc` routes the entries carrying
+a template keyword (`HOME_DIR`, `%{USERID}`) to the separate
+`file_contexts.homedirs` template and the rest to the main
+`file_contexts`), so the file contexts are *in* the module and
+`semodule -r apse` removes them all. Both `file_contexts.homedirs`
+entries are expanded by `genhomedircon` (`HOME_DIR` →
+`/home/[^/]+/`, `USERID` → `[0-9]+`, `system_u` → the user's
+selinux user) into `file_contexts.homedirs.bin`, which is what
+`restorecon`/`matchpathcon` consult for them. `restorecon` (or
 `chcon -t apse_exec_t`) is what actually relabels the installed
 binary — `semodule -i` only registers the contexts.
 

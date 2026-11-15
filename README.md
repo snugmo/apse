@@ -376,14 +376,14 @@ Six subcommands (the relay logic lives in `src/proxy/`, the broker in
 
 6. **`xwayland`** — the optional host-side satellite that gives the
    sandboxed app a per-instance X display (a host-side Xwayland client
-   of the desktop compositor; the app's `DISPLAY` / `XAUTHORITY` point
-   at the socket and auth file in the instance runtime dir):
-   `--app-id` / `--instance-id` (default `app` / `1`), `--display`
-   (default `97`), `--socket-name` (default `xwayland.sock`),
-   `--auth-name` (default `xwayland-auth`), `--wayland-display`
-   (default the `WAYLAND_DISPLAY` environment variable),
-   `--xwayland-bin` (default `Xwayland`), `--no-rootless` (rootless is
-   the default).
+   of the desktop compositor; the X socket and the MIT auth file live
+   in the instance runtime dir's `x/` subdir — decision #47 — and the
+   app's `DISPLAY` / `XAUTHORITY` point at them): `--app-id` /
+   `--instance-id` (default `app` / `1`), `--display` (default `97`),
+   `--socket-name` (default `xwayland.sock`), `--auth-name`
+   (default `xwayland-auth`), `--wayland-display` (default the
+   `WAYLAND_DISPLAY` environment variable), `--xwayland-bin`
+   (default `Xwayland`), `--no-rootless` (rootless is the default).
 
 ## Install
 
