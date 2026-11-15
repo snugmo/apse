@@ -378,12 +378,14 @@ pub(crate) struct XwaylandArgs {
     /// many setups), so it is refused.
     #[arg(long, default_value_t = 97)]
     pub(crate) display: u16,
-    /// The X socket's file name in the instance runtime dir
-    /// (default `xwayland.sock`).
+    /// The X socket's file name in the instance runtime dir's
+    /// `x/` subdir (default `xwayland.sock`; the subdir itself is
+    /// structural — decision #47).
     #[arg(long, value_name = "SOCKET")]
     pub(crate) socket_name: Option<String>,
-    /// The auth file's name in the instance runtime dir
-    /// (default `xwayland-auth`).
+    /// The auth file's name in the instance runtime dir's `x/`
+    /// subdir (default `xwayland-auth`; the subdir itself is
+    /// structural — decision #47).
     #[arg(long, value_name = "AUTH")]
     pub(crate) auth_name: Option<String>,
     /// The host compositor's Wayland display. Defaults to the

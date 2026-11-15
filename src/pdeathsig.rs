@@ -229,7 +229,12 @@ fn shim_context() -> Option<String> {
     Some(format!("{user}:object_r:apse_shim_t:s0"))
 }
 
-fn current_label(so: &std::path::Path) -> Option<String> {
+/// Read the `security.selinux` xattr of a path (its current label).
+/// `None` if the xattr is absent (no SELinux on this fs, or the
+/// path does not exist). No MAC check on this kernel
+/// (`selinux_inode_getsecurity` only converts the inode's SID), so
+/// it is safe to call from any label.
+pub(crate) fn current_label(so: &std::path::Path) -> Option<String> {
     use std::os::unix::ffi::OsStrExt;
     // A `CString`: the kernel reads the path as a NUL-terminated
     // string, and a raw Rust `String` buffer does not guarantee a

@@ -4,8 +4,8 @@
 //! an ordinary Wayland client of the desktop compositor — and shares
 //! only its X socket into the sandbox through the per-instance
 //! runtime dir. The sandboxed app points at it with
-//! `DISPLAY=unix:…/xwayland.sock` and `XAUTHORITY=…/xwayland-auth`
-//! (the *in-sandbox* paths, decision #28).
+//! `DISPLAY=unix:…/x/xwayland.sock` and `XAUTHORITY=…/x/xwayland-auth`
+//! (the *in-sandbox* paths, decisions #28/#47).
 //!
 //! Why host-side (not in-sandbox): the X server is the least-trusted
 //! component of the X stack — it reads every client's pixels and can
@@ -28,7 +28,7 @@
 //! contract):
 //!
 //! - **fd 4, `-listenfd`**: the X socket the *sidecar* created,
-//!   bound, and **listened** (`<instance-dir>/xwayland.sock`,
+//!   bound, and **listened** (`<instance-dir>/x/xwayland.sock`,
 //!   owner-only from birth). The sidecar must call `listen(2)` before
 //!   the handoff: Xwayland's `-listenfd` path (libXtrans
 //!   `SocketReopen`) adopts the fd *as-is* and never calls `listen`
@@ -42,7 +42,7 @@
 //!   mismatch is a hard error (the app's profile must name a stable
 //!   display, so a silent renumbering would be worse than a failure).
 //!
-//! Other arguments: `-auth <instance-dir>/xwayland-auth` (Xwayland
+//! Other arguments: `-auth <instance-dir>/x/xwayland-auth` (Xwayland
 //! writes its MIT cookie there; the app's `XAUTHORITY` points at the
 //! in-sandbox copy), `-nolisten tcp` (never a TCP listener), and
 //! `-rootless` by default (the window integrates with the desktop;
@@ -74,6 +74,16 @@
 //! a stale leftover of a dead instance). The 0600 instance socket is
 //! therefore the sole reachability surface, owner-gated.
 //!
+//! The socket and auth file live in a dedicated `x/` subdir of the
+//! instance dir (decision #47): in confined mode the SELinux module
+//! gives a dir named exactly `x` under the instance dir its own
+//! `apse_xsocket_t` type by a named filetrans, so the `xserver_t`
+//! grants on the auth file are module→module instead of the
+//! `xserver_t → user_tmp_t` base→base rules the old layout forced.
+//! [`ensure_xdir`] removes and recreates a stale `x/` a
+//! pre-filetrans satellite left behind (the mixed-version upgrade
+//! window), liveness-probed, so a live X socket is never disturbed.
+//!
 //! [`Xwayland`]: https://www.x.org/archive/commission/xace/docs/xwayland/
 
 use std::io::{self, Write as _};
@@ -83,12 +93,24 @@ use std::os::unix::process::CommandExt as _;
 use std::process;
 
 use anyhow::{Context, Result};
-use log::{debug, info};
+use log::{debug, info, warn};
 use nix::sys::signal::{
     SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGSYS, SIGTRAP, SigSet, SigmaskHow, Signal,
 };
 use nix::sys::signalfd::{SfdFlags, SignalFd};
 use rustix::event::{PollFd, PollFlags, poll};
+
+/// The name of the `x/` subdir of the per-instance runtime dir that
+/// holds the X socket and the MIT auth file (decision #47).
+/// **Structural, not configurable**: in confined mode the SELinux
+/// module gives a dir named exactly `x` under the `user_tmp_t`
+/// instance dir its own `apse_xsocket_t` type by a named filetrans,
+/// and the module's grants (and its filecon) target that label — a
+/// differently-named dir would be born `user_tmp_t`, and under the
+/// current module nothing may write the auth file into it.
+/// `--socket-name`/`--auth-name` change only the file names *inside*
+/// `x/`.
+const X_DIR: &str = "x";
 
 /// The fd number the sidecar hands Xwayland as `-listenfd` (the X
 /// socket). Fixed, mirrored by `pre_exec` below.
@@ -107,11 +129,13 @@ pub struct Config {
     /// The X display number (e.g. 97 → `:97`). Kept clear of the
     /// compositor's auto-spawned Xwayland.
     pub display: u16,
-    /// The X socket's file name inside the instance runtime dir
-    /// (default `xwayland.sock`).
+    /// The X socket's file name inside the instance runtime dir's
+    /// `x/` subdir (default `xwayland.sock`). The subdir itself is
+    /// structural (decision #47) — only the file name is
+    /// configurable.
     pub socket_name: String,
-    /// The auth file's name inside the instance runtime dir
-    /// (default `xwayland-auth`).
+    /// The auth file's name inside the instance runtime dir's `x/`
+    /// subdir (default `xwayland-auth`). See `socket_name`.
     pub auth_name: String,
     /// The host compositor's Wayland display; defaults to the
     /// `WAYLAND_DISPLAY` environment variable.
@@ -167,18 +191,24 @@ pub fn sandbox_instance_dir(app_id: &str, instance_id: &str) -> String {
     )
 }
 
+/// The X socket's path: the instance runtime dir's `x/` subdir
+/// (decision #47) plus the (configurable) socket file name.
 pub fn listen_socket_path(cfg: &Config) -> String {
     format!(
-        "{}/{}",
+        "{}/{}/{}",
         host_instance_dir(&cfg.app_id, &cfg.instance_id),
+        X_DIR,
         cfg.socket_name
     )
 }
 
+/// The MIT auth file's path: the instance runtime dir's `x/`
+/// subdir (decision #47) plus the (configurable) auth file name.
 pub fn auth_path(cfg: &Config) -> String {
     format!(
-        "{}/{}",
+        "{}/{}/{}",
         host_instance_dir(&cfg.app_id, &cfg.instance_id),
+        X_DIR,
         cfg.auth_name
     )
 }
@@ -444,6 +474,12 @@ pub fn run(cfg: Config) -> Result<()> {
         .with_context(|| format!("creating the per-instance runtime dir {dir:?}"))?;
     let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
 
+    // The `x/` subdir (decision #47), created before the socket so
+    // the socket's dentry (and, in confined mode, its graft) land
+    // under the module's `apse_xsocket_t`.
+    let xdir = format!("{dir}/{X_DIR}");
+    ensure_xdir(&xdir, &cfg)?;
+
     let listen = create_listen_socket(&socket)?;
     let (df_side, df_child) = displayfd_socketpair()?;
     let listen_fd = listen.as_fd().as_raw_fd();
@@ -585,9 +621,10 @@ pub fn run(cfg: Config) -> Result<()> {
         "xwayland: ready — display :{}, socket {}, auth {} (rootless: {})",
         cfg.display, socket, auth, cfg.rootless
     );
+    let sand_x = format!("{sand}/{X_DIR}");
     info!(
         "xwayland: profile [env] → DISPLAY=unix:{}/{}, XAUTHORITY={}/{}",
-        sand, cfg.socket_name, sand, cfg.auth_name
+        sand_x, cfg.socket_name, sand_x, cfg.auth_name
     );
 
     loop {
@@ -641,6 +678,76 @@ pub fn run(cfg: Config) -> Result<()> {
             }
         }
     }
+}
+
+/// Ensure the `x/` subdir (the X socket + MIT auth file's home,
+/// decision #47) exists and — in confined mode — carries the
+/// module's `apse_xsocket_t` label. A fresh dir gets the label at
+/// *birth* (the module's named filetrans: a dir named `x` that
+/// `apse_t` creates under the `user_tmp_t` instance dir), so the
+/// common path is just create + chmod. The one case where birth
+/// does not help: a stale dir left by a satellite that ran
+/// *before* the filetrans was installed (the mixed-version upgrade
+/// window — new binary, old module). That dir is
+/// `user_tmp_t`-labeled and the filetrans will never see it, so we
+/// remove and recreate (the fresh inode takes the filetrans
+/// label). Deliberately remove+recreate rather than a setxattr
+/// relabel: a relabel would need `relabelto` on `apse_xsocket_t`,
+/// which the module does not ask for, while a remove+recreate
+/// needs only the grants `apse_t` already holds on `user_tmp_t`
+/// (LESSONS #86). Under the *old* module the recreate simply
+/// yields another `user_tmp_t` dir (harmless: that module's
+/// grants cover it); once the module is upgraded, the next
+/// non-live start self-heals it for good. A dir a *live* X socket
+/// serves is never touched (decision #40: the liveness probe) —
+/// its label is consistent with the module the serving satellite
+/// ran under, and unlinking its socket would break that server.
+fn ensure_xdir(xdir: &str, cfg: &Config) -> Result<()> {
+    if std::path::Path::new(xdir).exists()
+        && crate::mcs::is_confined()
+        && let Some(want) = xsocket_context()
+        && let Some(cur) = crate::pdeathsig::current_label(std::path::Path::new(xdir))
+        && cur != want
+    {
+        match std::os::unix::net::UnixStream::connect(listen_socket_path(cfg)) {
+            Ok(conn) => {
+                // A live process serves the socket: keep the dir.
+                drop(conn);
+                warn!(
+                    "xwayland: the {xdir} dir is labeled {cur} (expected {want}) \
+                     but serves a live X socket; leaving it in place — \
+                     install the module with apse_xsocket_t and restart"
+                );
+                return Ok(());
+            }
+            Err(_) => {
+                // Stale or absent socket: safe to remove+recreate.
+                info!(
+                    "xwayland: removing stale {xdir} dir (labeled {cur}, \
+                     expected {want}); recreating so the filetrans labels it"
+                );
+                let _ = std::fs::remove_dir_all(xdir);
+            }
+        }
+    }
+    std::fs::create_dir_all(xdir)
+        .with_context(|| format!("creating the x/ socket dir {xdir:?}"))?;
+    let _ = std::fs::set_permissions(xdir, std::fs::Permissions::from_mode(0o700));
+    Ok(())
+}
+
+/// The SELinux context the `x/` dir must carry in confined mode:
+/// the module's `apse_xsocket_t` at level `s0` (created objects
+/// take the parent's low level; `s0` is dominated by every `s0:cN`),
+/// under the current user (the dir's user is its parent's).
+fn xsocket_context() -> Option<String> {
+    let user = std::fs::read_to_string("/proc/self/attr/current")
+        .ok()?
+        .split(':')
+        .next()?
+        .trim()
+        .to_string();
+    Some(format!("{user}:object_r:apse_xsocket_t:s0"))
 }
 
 /// Read `fd` until EOF (or 256 bytes, whatever comes first).
@@ -714,7 +821,12 @@ mod tests {
     }
 
     #[test]
-    fn listen_socket_and_auth_land_in_instance_dir() {
+    fn listen_socket_and_auth_land_in_the_x_subdir() {
+        // Decision #47: the socket and auth file live in the
+        // dedicated `x/` subdir of the instance dir (the module's
+        // filetrans names it; `X_DIR` above), so their labels land
+        // on `apse_xsocket_t`, never the instance dir's
+        // `user_tmp_t`.
         let cfg = Config {
             app_id: "firefox".into(),
             instance_id: "1".into(),
@@ -722,11 +834,11 @@ mod tests {
         };
         assert_eq!(
             listen_socket_path(&cfg),
-            format!("{}/xwayland.sock", host_instance_dir("firefox", "1"))
+            format!("{}/x/xwayland.sock", host_instance_dir("firefox", "1"))
         );
         assert_eq!(
             auth_path(&cfg),
-            format!("{}/xwayland-auth", host_instance_dir("firefox", "1"))
+            format!("{}/x/xwayland-auth", host_instance_dir("firefox", "1"))
         );
     }
 
