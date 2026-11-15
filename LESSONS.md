@@ -1750,5 +1750,89 @@ write-up.
    and B (a fork) mounts `/proc` before its own exec. Write probes for this
    area in python/ctypes: one `unshare(2)`, direct `setgroups`/`uid_map`/
    `gid_map` writes, all mounts before any exec (a forked child that mounts
-   before *its* exec works too). — *toolchain exploration;
+   before *its* exec works too). *(Amended 2026-11-15: later
+   probe harnesses on this same kernel — both the combined and
+   the apse unshare orderings — got EINVAL on the self-bind;
+   the harness-vs-production divergence is recorded as open in
+   #84. Production apse is unaffected: all 42 of its
+   `mount(2)` calls succeed.)* — *toolchain exploration;
    `docs/toolchains.md` finding #8, commit `1de378f`.*
+
+82. **A setuid-root binary is *inert* in apse's single-extent user
+   namespace — the euid grant is gated on the file owner being *mapped*,
+   and the capability upgrade on `root_privileged()` (kernel 7.3.3,
+   probed).** `bprm_fill_uid` (`fs/exec.c:1650`) skips the euid grant
+   unless `vfsuid_has_mapping(user_ns, owner)`: in the single-extent
+   `<uid> <uid> 1` map the owner uid 0 is unmapped, so the euid stays
+   the real uid; `handle_privileged_root` (`security/commoncap.c:829`)
+   skips the capability upgrade unless `root_privileged()` (also false
+   for an unmapped root), so no capabilities either. The effect is a
+   **namespace** property, not a mount property — the same binary
+   gives the same result through an overlay view, an overlay with
+   upper, and the original host path (probes v1/v2/v5). Even in the
+   worst-case nested `0→<uid>` mapping (the podman shape), the suid
+   bit is **indistinguishable** from a non-suid file: in-ns euid 0
+   maps to the host's real uid, `/etc/shadow` stays unreadable,
+   `CapEff` is the ns-local set — the A/B probe (v3 suid vs v3a
+   non-suid) shows zero delta. The copy-up vector is closed too: a
+   root-owned lower file is unwritable by the app (`EACCES`), so the
+   app can never force a copy-up of a root-owned suid binary into an
+   upper it controls; a self-planted 4755 file grants only its own
+   uid (a no-op, v4). There is no setuid path to privilege in the
+   apse design. — *setuid-in-sandbox investigation (2026-11-15);
+   8-child probe: host baseline, overlay view, overlay+upper,
+   original path, nested `0→1000` suid vs non-suid A/B, self-planted
+   4755.*
+
+83. **On 7.3.3-300.fc45, unprivileged overlayfs works (upper+workdir,
+   plain-directory lowers, both `1000:1000:1` and nested `0→1000`
+   mappings) — but `lowerdir=/`, the *original* root mount of the init
+   mount namespace, fails EINVAL.** The failure sits in the new mount
+   subsystem's clone path (`ovl_clone_private_mount` →
+   `clone_private_mount` → an ns-capability check against the
+   mount's *owning* namespace): the init-ns root is owned by the
+   init user namespace, which an unprivileged creator cannot satisfy;
+   a plain directory (no mount to clone) or a mount *we* created
+   clones fine. So an unprivileged overlay's lower must be a plain
+   dir or a creator-owned mount: the toolchain store in `/var/tmp`
+   (plain dir) is the working shape, and the whole-root runtime
+   overlay (`docs/toolchains.md` §10.4) must use the step-2
+   self-bind as its second lower, not the original root — that exact
+   two-lower shape is flagged there as the one to verify first. —
+   *toolchain / setuid investigation (2026-11-15);
+   `docs/toolchains.md` §10.4.*
+
+84. **On 7.3.3-300.fc45, legacy `mount(2)` behaves differently in
+   probe harnesses than in production apse — open question; do not
+   restructure `mounts.rs` on it.** A minimal probe (ctypes or a
+   fresh C child; every unshare ordering — combined `USER|NS`, the
+   apse order `USER→map→NS`, with and without the `MS_REC|MS_PRIVATE`
+   mark, with and without pid/cgroup ns, recursive and
+   non-recursive; root and uid 1000) gets **EINVAL** on
+   `mount("/", "/", MS_BIND|MS_REC)` and on every other bind of a
+   host mount (root in the init ns included), while the production
+   `apse` binary performs the **identical sequence** and all **42**
+   of its `mount(2)` calls succeed (strace; zero
+   `open_tree`/`move_mount`/`fsopen` — pure legacy API), and the app
+   runs to a clean exit. No SELinux AVC denials (the binary is
+   `user_home_t`, the probes `bin_t` — same result). The 7.3.3
+   source tarball analyzed for this kernel does not match the
+   running kernel's UAPI (its `OPEN_TREE_CLOEXEC` is defined as
+   `O_CLOEXEC` = 0x80, which the running kernel rejects — `0x1`
+   works; on this kernel `open_tree` is syscall 428, `move_mount`
+   429, new `open_tree_attr` 467, and 427 is now
+   `io_uring_register`), so the tarball's `MNT_NS_INTERNAL`/
+   `check_mnt` explanation (long-lived mounts carry a sentinel
+   namespace id that structurally fails the `check_mnt` comparison)
+   may not apply to this build. The one untested variable:
+   production passes **non-NULL** `type` (`"none"`) and **non-NULL**
+   `data` (`""`) on the self-bind (`src/sandbox/mounts.rs:592`)
+   while the probes passed NULL for both — a refactored `mount(2)`
+   compat path may route them differently. **Do not** rewrite
+   `mounts.rs` to the new mount API on the strength of the tarball
+   analysis: the production path is field-verified end-to-end
+   (42/42 mounts, the app runs, clean teardown). Next diagnostic if
+   pursued: a minimal C probe passing `("none", "")` on the
+   self-bind, both raw and inside a systemd user scope. — *setuid-in-
+   sandbox investigation (2026-11-15); production `apse run` strace
+   vs probe harnesses.*
