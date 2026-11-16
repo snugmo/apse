@@ -1,119 +1,113 @@
 # AGENTS.md
 
 apse: runs GUI apps (JetBrains IDEs, Librewolf) in an unprivileged
-**in-process sandbox** (namespaces, private rootfs, landlock+seccomp
-via `nono`) on a wlroots Wayland desktop (sway, Fedora) with native
-Wayland + GPU rendering. The Rust binary `apse` is a subcommand CLI:
-`run` creates the sandbox and tags the app's Wayland socket with the
-`wp_security_context_v1` protocol so the compositor identifies
-sandboxed clients; `wayland` is the original tag-and-park mode, which
-with `--proxy` additionally runs a transparent protocol relay (an
-optional global allowlist, a clipboard/primary-selection receive-gate,
-a selection audit log) and, with `--broker-socket`, a host-side broker
+**in-process sandbox** (namespaces, private rootfs, landlock+seccomp via
+`nono`) on a wlroots Wayland desktop (sway, Fedora) with native Wayland
++ GPU rendering. The Rust binary `apse` is a subcommand CLI: `run`
+creates the sandbox and tags the app's Wayland socket with the
+`wp_security_context_v1` protocol so the compositor identifies sandboxed
+clients; `wayland` is the original tag-and-park mode, which with
+`--proxy` additionally runs a transparent protocol relay (an optional
+global allowlist, a clipboard/primary-selection receive-gate, a
+selection audit log) and, with `--broker-socket`, a host-side broker
 (`broker`) that serves a consent prompt (dropped *reads*) and a
 fire-and-forget copy-out notification (app *writes*,
 `--notify-copy-out`); `decide` lists/resolves the broker's pending
-prompts; `dbus-proxy` and `xwayland` run the phase-7.2/7.3 sidecars
-(the `xdg-dbus-proxy` child, the rootless `Xwayland` satellite).
-**PLAN.md is the authoritative plan and decisions log — read
-it before non-trivial changes. LESSONS.md is a short, living record of
-hard-won lessons — skim it before non-trivial changes (the full
-write-ups live in `docs/postmortems/`). README.md is the
-architecture/threat-model doc (rewritten for the in-process world in
-phase 8.1).**
+prompts; `dbus-proxy` and `xwayland` run the phase-7.2/7.3 sidecars (the
+`xdg-dbus-proxy` child, the rootless `Xwayland` satellite). **PLAN.md is
+the authoritative plan and decisions log — read it before non-trivial
+changes. LESSONS.md is a short, living record of hard-won lessons — skim
+it before non-trivial changes (the full write-ups live in
+`docs/postmortems/`). README.md is the architecture/threat-model doc
+(rewritten for the in-process world in phase 8.1).**
 
 ## Layout
 
-- `src/main.rs` — binary entry: logging, CLI parse, subcommand
-  dispatch (`run`/`wayland`/`broker`/`decide`/`dbus-proxy`/
-  `xwayland`). SIGHUP semantics are mode-dependent: `run` terminates
-  the app and exits 129 (decision
+- `src/main.rs` — binary entry: logging, CLI parse, subcommand dispatch
+  (`run`/`wayland`/`broker`/`decide`/`dbus-proxy`/ `xwayland`). SIGHUP
+  semantics are mode-dependent: `run` terminates the app and exits 129
+  (decision
   #33); the `wayland` modes rebuild (in-place re-exec in `--listen`
   mode, clean exit for a systemd restart when socket-activated)
 - `src/cli.rs` — clap subcommand tree: `run` (sandboxed execution),
   `wayland` (tag-and-park or `--proxy`, incl. `--tagged-socket`,
   `--allow-globals`, `--clipboard-policy`, `--broker-socket`,
   `--notify-copy-out`), `broker` (`--listen`/`--socket-activation`,
-  `--auto-decide`, `--broker-timeout-millis`), `decide`
-  (`--decision`, `--prompt`), `dbus-proxy` (`--app-id`,
-  `--instance-id`, `--bus-address`, `--socket-name`,
+  `--auto-decide`, `--broker-timeout-millis`), `decide` (`--decision`,
+  `--prompt`), `dbus-proxy` (`--app-id`, `--instance-id`,
+  `--bus-address`, `--socket-name`,
   `--see`/`--talk`/`--own`/`--call`/`--broadcast`, `--proxy-bin`),
   `xwayland` (`--app-id`, `--instance-id`, `--display` (default 97),
-  `--socket-name`, `--auth-name`, `--wayland-display`,
-  `--xwayland-bin`, `--no-rootless`); cross-field checks live in
-  `validate()`
+  `--socket-name`, `--auth-name`, `--wayland-display`, `--xwayland-bin`,
+  `--no-rootless`); cross-field checks live in `validate()`
 - `src/lib.rs` — library modules used by the binary:
   - `proxy/` — the `--proxy` relay: wire parser, object bookkeeping
     (convention-adaptive ID layout), interface tables (generated),
     global allowlist policy, the selection receive-gate (detects app
-    writes/clears via `ClipboardGate::set_selection` and rate-limits
-    the copy-out notification), the broker client, `audit.rs` (one
-    size-only `key=value` record per `set`/`read`/`clear`/`serve`
-    under the `audit` log target), and the signalfd loop
+    writes/clears via `ClipboardGate::set_selection` and rate-limits the
+    copy-out notification), the broker client, `audit.rs` (one size-only
+    `key=value` record per `set`/`read`/`clear`/`serve` under the
+    `audit` log target), and the signalfd loop
     (`run_signal_loop`/`re_exec`; SIGHUP → rebuild)
   - `broker.rs` — the broker daemon: N-D-JSON, one consent
     `clipboard-read` request/response *and* one one-way
-    `clipboard-write` notification per connection; in interactive mode
-    a session decision socket (`decision.sock`, bound once for the
-    life of the session) carries `decide`'s list/decide requests over
-    a poll(2) main loop
+    `clipboard-write` notification per connection; in interactive mode a
+    session decision socket (`decision.sock`, bound once for the life of
+    the session) carries `decide`'s list/decide requests over a poll(2)
+    main loop
   - `dbus_proxy.rs` — the Phase-7.2 D-Bus sidecar: owns an
-    `xdg-dbus-proxy` child (signalfd + pidfd `poll(2)` loop; stops it
-    on TERM/INT/HUP); the child's lifetime is a private socketpair
-    handed over as `--fd=3` (**non**-CLOEXEC — `execve` closes
-    CLOEXEC fds), so even a SIGKILL'd sidecar tears the proxy down
-    (decision #36); sync-byte readiness gate; public `bus.sock` in
-    the per-instance runtime dir, owner-only
+    `xdg-dbus-proxy` child (signalfd + pidfd `poll(2)` loop; stops it on
+    TERM/INT/HUP); the child's lifetime is a private socketpair handed
+    over as `--fd=3` (**non**-CLOEXEC — `execve` closes CLOEXEC fds), so
+    even a SIGKILL'd sidecar tears the proxy down (decision #36);
+    sync-byte readiness gate; public `bus.sock` in the per-instance
+    runtime dir, owner-only
 - `mcs.rs` — per-instance MCS categories (phase 8.2, confined mode
-    only): one category `cN` of the user's `s0-s0:c0.c1023` range
-    per (app-id, instance-id) via a stable FNV-1a hash; the
-    one-time self-narrowing re-exec (`self_reexec_with_category`,
-    loop-guarded by range equality, degrading to no-MCS on a failed
-    exec-context write), the `setexecfilecon` carry-over into the
-    app/`xserver_t` execs (`set_exec_context`), and the range-
-    preserving re-exec (`preserve_range`, which skips a pending
-    explicit exec context so the narrowing is never clobbered).
-    No-op when the current label is not `apse_t`
-- `xwayland.rs` — the Phase-7.3 Xwayland satellite: owns an
-    `Xwayland` child (same signalfd + pidfd `poll(2)` shape;
-    TERM→2s→KILL teardown); the sidecar creates, binds **and
-    listens** the X socket (the spawner must `listen` — Xwayland's
-    `-listenfd` path adopts the fd as-is) and hands it over as
-    `-listenfd` (non-CLOEXEC); a socketpair as `-displayfd` is the
-    readiness gate (display number cross-checked against
-    `--display`); the X socket and MIT auth file live in the
-    instance dir's `x/` subdir (decision #47 — `apse_xsocket_t` in
-    confined mode; the socket file itself stays `apse_t` via the
-    kernel's `selinux_sock_graft`); `-auth` (MIT cookie),
-    `-nolisten tcp`, `-rootless` by default. The lifetime backstop
-    for a SIGKILL'd satellite is
-    `PR_SET_PDEATHSIG` (set in `pre_exec`, re-armed in the child by
-    the shared `pdeathsig` shim — the SELinux transition into
-    `xserver_t` clears it on exec; decision #37, LESSONS #19-20)
-- `pdeathsig.rs` — the `PR_SET_PDEATHSIG` lifetime backstop shared
-  by the run pipeline (decision #42) and the `xwayland` satellite
-  (decision #37): `set`/`get` (7.2.11 semantics: `fork` *resets* the
-  value to 0 — it is not inherited, so every cascade link arms
-  itself after its own fork; `execve` clears it **unconditionally on
-  any SELinux SID change** (`selinux_bprm_committing_creds`,
-  `security/selinux/hooks.c:2545`, commit `4ac212ad4e8f`) — the
-  confined exec — and via the legacy paths (`bprm->secureexec`:
-  setuid/setgid/caps or a *denied* `noatsecure`; `commit_creds` on an
-  actual credential change); `PR_GET_PDEATHSIG` writes the value to
-  the `arg2` pointer)
-  and `ensure_shim` (the on-demand-compiled `LD_PRELOAD` `.so` whose
-  constructor re-arms the signal after an exec; in confined mode it
-  also relabels the `.so` to the module's `apse_shim_t` — a 7.2
-  `PROT_EXEC` mapping needs `file:execute`, which the confined
-  consumers hold only on that type, LESSONS #41 — and runs the
-  `cc` under a *pinned* exec context, so the vforked compiler stays
-  `apse_t` instead of the module's `typetransition` dragging it
-  into `apse_app_t`, LESSONS #42; the xattr paths go over as
-  `CString` — a raw Rust byte buffer is not NUL-terminated and the
-  kernel reads past it (LESSONS #43); the file is signal-suffixed,
-  `pdeathsig-restore-<sig>.so`, so `SIGUSR1` (the run pipeline) and
-  `SIGTERM` (the satellite) don't collide in the shared per-instance
-  runtime dir)
+  only): one category `cN` of the user's `s0-s0:c0.c1023` range per
+  (app-id, instance-id) via a stable FNV-1a hash; the one-time
+  self-narrowing re-exec (`self_reexec_with_category`, loop-guarded by
+  range equality, degrading to no-MCS on a failed exec-context write),
+  the `setexecfilecon` carry-over into the app/`xserver_t` execs
+  (`set_exec_context`), and the range-preserving re-exec
+  (`preserve_range`, which skips a pending explicit exec context so the
+  narrowing is never clobbered). No-op when the current label is not
+  `apse_t`
+- `xwayland.rs` — the Phase-7.3 Xwayland satellite: owns an `Xwayland`
+  child (same signalfd + pidfd `poll(2)` shape; TERM→2s→KILL teardown);
+  the sidecar creates, binds **and listens** the X socket (the spawner
+  must `listen` — Xwayland's `-listenfd` path adopts the fd as-is) and
+  hands it over as `-listenfd` (non-CLOEXEC); a socketpair as
+  `-displayfd` is the readiness gate (display number cross-checked
+  against `--display`); the X socket and MIT auth file live in the
+  instance dir's `x/` subdir (decision #47 — `apse_xsocket_t` in
+  confined mode; the socket file itself stays `apse_t` via the kernel's
+  `selinux_sock_graft`); `-auth` (MIT cookie), `-nolisten tcp`,
+  `-rootless` by default. The lifetime backstop for a SIGKILL'd
+  satellite is `PR_SET_PDEATHSIG` (set in `pre_exec`, re-armed in the
+  child by the shared `pdeathsig` shim — the SELinux transition into
+  `xserver_t` clears it on exec; decision #37, LESSONS #19-20)
+- `pdeathsig.rs` — the `PR_SET_PDEATHSIG` lifetime backstop shared by
+  the run pipeline (decision #42) and the `xwayland` satellite (decision
+  #37): `set`/`get` (7.2.11 semantics: `fork` *resets* the value to 0 —
+  it is not inherited, so every cascade link arms itself after its own
+  fork; `execve` clears it **unconditionally on any SELinux SID change**
+  (`selinux_bprm_committing_creds`, `security/selinux/hooks.c:2545`,
+  commit `4ac212ad4e8f`) — the confined exec — and via the legacy paths
+  (`bprm->secureexec`: setuid/setgid/caps or a *denied* `noatsecure`;
+  `commit_creds` on an actual credential change); `PR_GET_PDEATHSIG`
+  writes the value to the `arg2` pointer) and `ensure_shim` (the
+  on-demand-compiled `LD_PRELOAD` `.so` whose constructor re-arms the
+  signal after an exec; in confined mode it also relabels the `.so` to
+  the module's `apse_shim_t` — a 7.2 `PROT_EXEC` mapping needs
+  `file:execute`, which the confined consumers hold only on that type,
+  LESSONS #41 — and runs the `cc` under a *pinned* exec context, so the
+  vforked compiler stays `apse_t` instead of the module's
+  `typetransition` dragging it into `apse_app_t`, LESSONS #42; the xattr
+  paths go over as `CString` — a raw Rust byte buffer is not
+  NUL-terminated and the kernel reads past it (LESSONS #43); the file is
+  signal-suffixed, `pdeathsig-restore-<sig>.so`, so `SIGUSR1` (the run
+  pipeline) and `SIGTERM` (the satellite) don't collide in the shared
+  per-instance runtime dir)
 - `src/wayland/` — the tagged Wayland socket for the `run` pipeline:
   `listener` (socket activation / `--listen`), `roundtrip` (bounded
   sync), `context` (the `wp_security_context_v1` exchange)
@@ -122,77 +116,73 @@ phase 8.1).**
   `policy` (the nono `CapabilitySet` + three-stage apply, #27),
   `supervise` (notify-fd handoff, app-pid report, verdict pipe, the
   S-side supervisor loop, #23/#25/#26), `mod` (S→A→B pipeline,
-  `run_sandboxed`, the S-side signal forwarder / `terminate_app`,
-  the `waitpid_retry` + `AppKillGuard` orphan backstop, #41, the
-  decision-#42 `PR_SET_PDEATHSIG` cascade — A sets `SIGUSR1` after
-  the first fork and installs its handler after the second (B does
-  not inherit it); the handler only sets a flag, and the delivery's
-  `EINTR` makes `waitpid_retry` escape so A kills B and exits 137;
-  B re-arms its own link pre-exec and, in confined mode, an
-  `LD_PRELOAD` shim re-arms it across the exec (see `pdeathsig.rs`);
-  B also `chdir`s to the app's home before the exec (#43: the
-  private per-app home is the only mode since #44) — the
-  inherited CWD is the host's launch dir, which the build replaces,
-  and fork+`chdir(cwd)`+exec apps (foot's `slave_spawn`) would
-  otherwise die on the vanished path — sd-notify, #33)
+  `run_sandboxed`, the S-side signal forwarder / `terminate_app`, the
+  `waitpid_retry` + `AppKillGuard` orphan backstop, #41, the
+  decision-#42 `PR_SET_PDEATHSIG` cascade — A sets `SIGUSR1` after the
+  first fork and installs its handler after the second (B does not
+  inherit it); the handler only sets a flag, and the delivery's `EINTR`
+  makes `waitpid_retry` escape so A kills B and exits 137; B re-arms its
+  own link pre-exec and, in confined mode, an `LD_PRELOAD` shim re-arms
+  it across the exec (see `pdeathsig.rs`); B also `chdir`s to the app's
+  home before the exec (#43: the private per-app home is the only mode
+  since #44) — the inherited CWD is the host's launch dir, which the
+  build replaces, and fork+`chdir(cwd)`+exec apps (foot's `slave_spawn`)
+  would otherwise die on the vanished path — sd-notify, #33)
 - `src/profile/` — per-app TOML profiles (`gpu`, `ro_binds`, `rw_binds`,
-  `mask`, `env`, …; `deny_unknown_fields`; the app's home is always
-  the private per-app tree — #43/#44)
+  `mask`, `env`, …; `deny_unknown_fields`; the app's home is always the
+  private per-app tree — #43/#44)
 - `src/systemd.rs` — the transient session-bus scope (phase 6.1, #35)
 - `src/testutil.rs` — shared `#[cfg(test)]` helpers (env locking,
   TmpDir, the LISTEN-FD / sandbox locks)
 - `tests/proxy_integration.rs` — three-party integration tests (fake
-  compositor, real wayland-client, the relay): pass-through,
-  allowlist, clipboard (incl. the selection-audit records), primary
-  selection, broker consent, copy-out notification
-- `tests/broker_integration.rs` — end-to-end tests of the broker
-  daemon as a subprocess: multiple pending prompts on the session
-  decision socket (list/resolve by id, timeout, refused decides)
+  compositor, real wayland-client, the relay): pass-through, allowlist,
+  clipboard (incl. the selection-audit records), primary selection,
+  broker consent, copy-out notification
+- `tests/broker_integration.rs` — end-to-end tests of the broker daemon
+  as a subprocess: multiple pending prompts on the session decision
+  socket (list/resolve by id, timeout, refused decides)
 - `tests/phase0_interface_tables.rs` — checks the generated
   interface/wlr tables against the protocol XMLs
-- `tests/sandbox_integration.rs` — the phase-8.4 suite: the built
-  `apse run` binary spawned as a subprocess with a python3 probe;
-  asserts identity (uid map, PID 1, cgroup ns, hostname), the rebuilt
-  rootfs, the landlock floor, the network modes, the tagged socket,
-  and the lifecycle (sd-notify, TERM→KILL escalation)
+- `tests/sandbox_integration.rs` — the phase-8.4 suite: the built `apse
+  run` binary spawned as a subprocess with a python3 probe; asserts
+  identity (uid map, PID 1, cgroup ns, hostname), the rebuilt rootfs,
+  the landlock floor, the network modes, the tagged socket, and the
+  lifecycle (sd-notify, TERM→KILL escalation)
 - `protocols/` — the protocol XMLs (source of `wlr_tables.rs` and the
   interface-table generator)
-- `scripts/gen_interface_table.py` — generates
-  `src/proxy/interfaces.rs` (the name → `&'static Interface` lookup
-  table) from the protocol XMLs. `src/proxy/wlr_tables.rs` is a
-  checked-in `wayland_scanner::generate_interfaces!` table over
-  `protocols/*.xml` that expands at compile time. **Do not hand-edit
-  either file** (CI regenerates and diffs them).
-  `scripts/bake_header.py` re-bakes the header SVG lettering (one
-  `<path>` per glyph, cubic-only — `all_cubic=True`, LESSONS #50) from
-  Open Sans; it is deterministic (a re-run is byte-identical) and
-  preserves the logo mark group verbatim. `scripts/verify_header.py`
-  checks the result without eyeballing: a nesting-aware contour
-  winding check plus a per-group pixel comparison of the RSVG render
-  against FreeType at the baker's exact geometry (tolerances
-  calibrated against the `all_cubic=False` failure).
-- `.github/workflows/ci.yml` — the full CI gate, run on pushes to
-  `main` only (single-developer repo, so `main` is the merge point
-  and the gate for it): compile + the two table sync-checks
-  (`wlr_tables.rs` is rebuilt by the compiler from the vendored
-  protocol XMLs, `interfaces.rs` is diffed against the generator
-  output), `rustfmt`, `clippy` (deny warnings), and the full test
-  suite, run single-threaded. It runs on `ubuntu-latest` (Ubuntu
-  26.04), a headless runner: the workflow first disables Ubuntu's
-  default AppArmor unprivileged-userns restriction so the sandbox
-  tests can map their uid/gid, and the header comment is the
-  authoritative explanation of that and of the runner quirks the
-  test suite's skip-guards absorb (see the "CI runner" Facts note).
-- `systemd/user/` — the apse-broker socket+service units: the only
-  units in the repo. Per-app proxies are documented manual runs (the
-  README), and the phase-7.2/7.3 `dbus-proxy`/`xwayland` sidecars
-  would land here
-- `selinux/` — the confined-mode SELinux module: `apse.cil` (the
-  single source of truth and install artifact — `apse_t`,
-  `apse_app_t`, `apse_shim_t`, the `xserver_t` fix, the
-  per-instance MCS categories, `;` line comments) and `README.md`
-  (the design: what the MCS actually isolates, the enforcing-mode
-  tuning history)
+- `scripts/gen_interface_table.py` — generates `src/proxy/interfaces.rs`
+  (the name → `&'static Interface` lookup table) from the protocol XMLs.
+  `src/proxy/wlr_tables.rs` is a checked-in
+  `wayland_scanner::generate_interfaces!` table over `protocols/*.xml`
+  that expands at compile time. **Do not hand-edit either file** (CI
+  regenerates and diffs them). `scripts/bake_header.py` re-bakes the
+  header SVG lettering (one `<path>` per glyph, cubic-only —
+  `all_cubic=True`, LESSONS #50) from Open Sans; it is deterministic (a
+  re-run is byte-identical) and preserves the logo mark group verbatim.
+  `scripts/verify_header.py` checks the result without eyeballing: a
+  nesting-aware contour winding check plus a per-group pixel comparison
+  of the RSVG render against FreeType at the baker's exact geometry
+  (tolerances calibrated against the `all_cubic=False` failure).
+- `.github/workflows/ci.yml` — the full CI gate, run on pushes to `main`
+  only (single-developer repo, so `main` is the merge point and the gate
+  for it): compile + the two table sync-checks (`wlr_tables.rs` is
+  rebuilt by the compiler from the vendored protocol XMLs,
+  `interfaces.rs` is diffed against the generator output), `rustfmt`,
+  `clippy` (deny warnings), and the full test suite, run
+  single-threaded. It runs on `ubuntu-latest` (Ubuntu 26.04), a headless
+  runner: the workflow first disables Ubuntu's default AppArmor
+  unprivileged-userns restriction so the sandbox tests can map their
+  uid/gid, and the header comment is the authoritative explanation of
+  that and of the runner quirks the test suite's skip-guards absorb (see
+  the "CI runner" Facts note).
+- `systemd/user/` — the apse-broker socket+service units: the only units
+  in the repo. Per-app proxies are documented manual runs (the README),
+  and the phase-7.2/7.3 `dbus-proxy`/`xwayland` sidecars would land here
+- `selinux/` — the confined-mode SELinux module: `apse.cil` (the single
+  source of truth and install artifact — `apse_t`, `apse_app_t`,
+  `apse_shim_t`, the `xserver_t` fix, the per-instance MCS categories,
+  `;` line comments) and `README.md` (the design: what the MCS actually
+  isolates, the enforcing-mode tuning history)
 - `PLAN.md` — rework plan: architecture, decisions log, phase/task list
 - `LESSONS.md` — a short, living record of hard-won lessons from past
   work; add a line whenever a change teaches something durable, and
@@ -200,13 +190,13 @@ phase 8.1).**
 - `docs/postmortems/` — full write-ups of significant bugs/fixes (one
   per incident), referenced from `LESSONS.md`; currently the
   fd-misrouting post-mortem
-- `docs/apparmor.md` — design sketch for an AppArmor confinement
-  layer (the no-SELinux analogue of `selinux/`): parked future
-  item; the unconfined baseline already works on AppArmor machines
-  (CI's ubuntu runner is one), so this is the second layer only —
-  three path-based profiles, a `change_profile` exec-transition
-  backend, no MCS equivalent; the open question (does a
-  `change_profile` exec clear `PR_SET_PDEATHSIG`?) is in §2.2
+- `docs/apparmor.md` — design sketch for an AppArmor confinement layer
+  (the no-SELinux analogue of `selinux/`): parked future item; the
+  unconfined baseline already works on AppArmor machines (CI's ubuntu
+  runner is one), so this is the second layer only — three path-based
+  profiles, a `change_profile` exec-transition backend, no MCS
+  equivalent; the open question (does a `change_profile` exec clear
+  `PR_SET_PDEATHSIG`?) is in §2.2
 - `assets/` — logos/headers. The header SVG lettering (wordmark and
   tagline) is baked from Open Sans (Bold / Regular) — one `<path>` per
   glyph, no `<text>` anywhere — so regenerate it with
@@ -216,45 +206,44 @@ phase 8.1).**
 
 ## Facts
 
-- Target: Fedora 45, user-level systemd, sway/wlroots desktop. No containers: the sandbox is created by
-  `apse` itself (namespaces, private rootfs, landlock+seccomp via
-  `nono`) — see PLAN.md. The container-era deployment is fully
-  deleted; the broker units are re-homed to the subcommand CLI
-  (phase 7.1).
-- **CI runs on a headless `ubuntu-latest` runner (Ubuntu 26.04),
-  which differs from the Fedora 45 dev target in three ways the
-  test suite must absorb** (the `ci.yml` header documents the first;
-  the other two are handled by skip-guards in the tests themselves):
-  (1) Ubuntu enables
-  `kernel.apparmor_restrict_unprivileged_userns=1` by default — an
-  unprivileged `unshare(CLONE_NEWUSER)` *succeeds* but the follow-on
-  `setgroups` write is denied, so the single-extent `uid_map`/
-  `gid_map` fail with EPERM. `ci.yml` turns the knob off with a
-  **hard** `sudo sysctl -w …=0` step (no `|| true` — a future runner
-  that drops it should fail loudly, not silently skip the suite);
-  the sandbox tests additionally probe the real sequence
-  (`sandbox::userns::tests::unprivileged_userns_supported`, cached in
-  a one-shot fork) and skip on any machine where the environment
-  refuses, so the suite degrades gracefully off-Ubuntu too.
-  (2) The runner is **headless** — no `sway`/wlroots compositor — so
-  the tagged-socket tests (in-crate
+- Target: Fedora 45, user-level systemd, sway/wlroots desktop. No
+  containers: the sandbox is created by `apse` itself (namespaces,
+  private rootfs, landlock+seccomp via `nono`) — see PLAN.md. The
+  container-era deployment is fully deleted; the broker units are
+  re-homed to the subcommand CLI (phase 7.1).
+- **CI runs on a headless `ubuntu-latest` runner (Ubuntu 26.04), which
+  differs from the Fedora 45 dev target in three ways the test suite
+  must absorb** (the `ci.yml` header documents the first; the other two
+  are handled by skip-guards in the tests themselves): (1) Ubuntu
+  enables `kernel.apparmor_restrict_unprivileged_userns=1` by default —
+  an unprivileged `unshare(CLONE_NEWUSER)` *succeeds* but the follow-on
+  `setgroups` write is denied, so the single-extent `uid_map`/ `gid_map`
+  fail with EPERM. `ci.yml` turns the knob off with a **hard** `sudo
+  sysctl -w …=0` step (no `|| true` — a future runner that drops it
+  should fail loudly, not silently skip the suite); the sandbox tests
+  additionally probe the real sequence
+  (`sandbox::userns::tests::unprivileged_userns_supported`, cached in a
+  one-shot fork) and skip on any machine where the environment refuses,
+  so the suite degrades gracefully off-Ubuntu too. (2) The runner is
+  **headless** — no `sway`/wlroots compositor — so the tagged-socket
+  tests (in-crate
   `sandbox::tests::tagged_socket_is_carried_reachable_and_untagged`,
   integration `wayland_tagged_socket_is_the_only_socket`) skip via a
   three-check predicate (`WAYLAND_DISPLAY` empty, a non-standard
   `XDG_RUNTIME_DIR`, or an absent session socket); full tagged-path
   coverage on CI would need a fake compositor implementing
-  `wp_security_context_v1` (PLAN.md §8). (3) The runner's
-  `/bin/sh` is **dash**, not bash, so a test that captures `$?`
-  after a *failed redirection* must not assert an exact code (dash:
-  2, bash: 1; POSIX only guarantees non-zero) — normalise it in the
-  script (`cmd && a=0 || a=1`, LESSONS #51).
+  `wp_security_context_v1` (PLAN.md §8). (3) The runner's `/bin/sh` is
+  **dash**, not bash, so a test that captures `$?` after a *failed
+  redirection* must not assert an exact code (dash: 2, bash: 1; POSIX
+  only guarantees non-zero) — normalise it in the script (`cmd && a=0 ||
+  a=1`, LESSONS #51).
 - The app runs as its **real uid** inside the user namespace: the
   `uid_map` is a **single extent `<uid> <uid> 1`**, written **exactly
   once** (decision #9), because that is all an unprivileged creator may
   write (decision #10). In-ns `0` is therefore **unmapped** — the app
   can never be root or another user, and root-owned trees are simply
-  unwritable by it. (The old two-entry `0→uid; uid→uid` map was
-  replaced in Phase 3.)
+  unwritable by it. (The old two-entry `0→uid; uid→uid` map was replaced
+  in Phase 3.)
 - The private rootfs is **rebuilt, not masked**: the recursive self-bind
   of `/` (never `ro` — see below) is the base; `/dev` and `/sys` are
   **fresh tmpfs** with subpath binds of the nodes the app needs, because
@@ -264,96 +253,87 @@ phase 8.1).**
   the ro flag and `MS_REMOUNT` is `EPERM` (decision #21) — so ro
   semantics come from the app's real uid plus nono's landlock/seccomp
   policy, not from mount flags. The build scratch lives on
-  `/var/tmp/.apse/<inst>` and carries the per-instance runtime dir
-  out from under the fresh-`/run` mask (decision #28). The combined
+  `/var/tmp/.apse/<inst>` and carries the per-instance runtime dir out
+  from under the fresh-`/run` mask (decision #28). The combined
   seccomp-notify + Landlock floor is applied three-stage in B pre-exec
-  (decision #27); B blocks on A's verdict before exec (decision #26);
-  S services the listener (auto-deny, decision #25).
+  (decision #27); B blocks on A's verdict before exec (decision #26); S
+  services the listener (auto-deny, decision #25).
 - The cgroup ns is rooted at the instance sub-cgroup, which must be
   created and entered **before** `unshare(CLONE_NEWCGROUP)` (decision
   #20); the app then sees `0::/`.
 - The app only sees the **tagged** Wayland socket, never the host
-  socket; the reference pipe ("close" fd) must stay open for the
-  process lifetime (ownership note in `wayland/context.rs`).
+  socket; the reference pipe ("close" fd) must stay open for the process
+  lifetime (ownership note in `wayland/context.rs`).
 - Per-instance runtime dir on the host:
   `$XDG_RUNTIME_DIR/apse/<app>-<instance>/`. Inside the sandbox it
   always appears at the systemd-standard
-  `/run/user/<uid>/apse/<app>-<instance>/`, regardless of the
-  host's `XDG_RUNTIME_DIR` (decision #28) — and that in-sandbox path
-  is what the app's env uses: `run --wayland` sets `XDG_RUNTIME_DIR`
-  to it and `WAYLAND_DISPLAY` to the socket name (default
-  `wayland-1`). It also holds the per-instance `/etc` sources
-  (task 8.10): `etc/hosts` and `etc/hostname` (the UTS name
-  `apse-<app>-<instance>` resolves on loopback from them) are
-  generated by A into it and step 7.5 binds them over the
-  self-bind-layer `/etc` (read-only; `apse_etc_t` in confined mode).
+  `/run/user/<uid>/apse/<app>-<instance>/`, regardless of the host's
+  `XDG_RUNTIME_DIR` (decision #28) — and that in-sandbox path is what
+  the app's env uses: `run --wayland` sets `XDG_RUNTIME_DIR` to it and
+  `WAYLAND_DISPLAY` to the socket name (default `wayland-1`). It also
+  holds the per-instance `/etc` sources (task 8.10): `etc/hosts` and
+  `etc/hostname` (the UTS name `apse-<app>-<instance>` resolves on
+  loopback from them) are generated by A into it and step 7.5 binds them
+  over the self-bind-layer `/etc` (read-only; `apse_etc_t` in confined
+  mode).
 - **Per-instance MCS (phase 8.2, `src/mcs.rs`):** in confined mode
-  (module installed + binary relabeled to `apse_exec_t`), each
-  instance runs in its own category `cN` of the user's
-  `s0-s0:c0.c1023` range (a stable hash of app-id+instance-id — the
-  `run` pipeline and the standalone proxy/satellites must agree,
-  which they do by construction). Every apse process narrows its
-  own range to a single-level `s0:cN` by a `apse_t` self-
-  `dyntransition` re-exec **before** it creates or binds anything, so
-  every forked child inherits `cN` (a process takes its creator's
-  full range); B and the Xwayland/dbus-proxy satellites carry the
-  range into their execs via setexecfilecon (`apse_app_t`/
-  `xserver_t`). The isolation is **process-level, not object-level**
-  (LESSONS #29): both types are in the base `mcs_constrained_type`
-  set, so the base mlsconstrain (`h1 dom h2`) lets a `cN` subject
-  signal/ptrace/transition only a *same-`cN`* process (a single
+  (module installed + binary relabeled to `apse_exec_t`), each instance
+  runs in its own category `cN` of the user's `s0-s0:c0.c1023` range (a
+  stable hash of app-id+instance-id — the `run` pipeline and the
+  standalone proxy/satellites agree by construction). Every apse process
+  narrows to single-level `s0:cN` by a `apse_t` self-`dyntransition`
+  re-exec **before** it creates or binds anything, so every forked child
+  inherits `cN` (a process takes its creator's full range); B and the
+  satellites carry it into their execs via setexecfilecon. The broker
+  narrows to single-level `s0` (`mcs::self_reexec_to_s0`). The isolation
+  is **process-level, not object-level** (LESSONS #29): a `cN` subject
+  can signal/ptrace/transition only a *same-`cN`* process (a single
   category is incomparable with any other — *stronger* than podman's
-  `cNNN,cMMM` model). But `dir`/`file`/`sock_file` created under the
-  `s0` runtime parent take the **parent's** low level (`default_range
-  … target low`), so the instance dir and everything the app writes
-  are `s0` and reachable from every `cN` — file/dir separation comes
-  from the namespaces + landlock rootfs, not SELinux. The broker
-  narrows to single-level `s0` (`mcs::self_reexec_to_s0`) for
-  subject-range hygiene. One known gap: this kernel's `signull`
-  (kill 0) is not in the base mlsconstrain and a module CIL can't add
-  one, so the `terminate_app` kill -0 probe is not category-scoped
-  (LESSONS #33). SIGHUP re-execs preserve the range; a failed
-  narrowing degrades to a no-MCS run. In unconfined mode every
-  mechanism is a no-op. Details: `selinux/README.md` (the
-  "Per-instance MCS" section), decision #38.
-- **In-sandbox debugging (task 8.7, v2.33) is a two-layer gate with
-  AND semantics:** (1) *per-sandbox, default on* — for every run
-  except `--debug`, B installs a second stacked classic-BPF seccomp
-  filter *after* nono's notify filter (filters evaluate
-  newest-first, so it is checked first; `SECCOMP_RET_ALLOW` for
-  everything except `ptrace` → `EPERM`) — `run --debug` skips the
-  install for that one run (`Seccomp_filters: 2` → `1`; the X32
-  guard bit lives in the syscall *number*, not the arch — LESSONS
-  #80). (2) *global, default off* — the CIL boolean
-  `apse_app_ptrace` (root-only toggle, `setsebool -P`) gates the
-  `apse_app_t` **self**-grant `(process (ptrace))` (a self-grant:
-  the debugger execs into `apse_app_t` exactly like its target),
-  bounded to the run's own process tree by the MCS `cN`. `run
-  --debug` in confined mode reads the boolean unprivileged before
-  building (`/sys/fs/selinux/booleans/` holds `<value> <state>` —
-  two fields; `apse_t` needed a `security_t` `search`/`read` grant
-  to make the read possible — LESSONS #79) and fail-fasts with an
-  actionable message. Host-side `strace -p`/`gdb -p` from unconfined
-  are unaffected (the "user can trace" line). Details:
-  `selinux/README.md` ("In-sandbox debugging").
+  `cNNN,cMMM`), but objects created under the `s0` runtime parent take
+  the parent's low level, so the instance dir and everything the app
+  writes are reachable from every `cN` — file/dir separation comes from
+  the namespaces + landlock rootfs, not SELinux. One known gap: this
+  kernel's `signull` (kill 0) is outside the base mlsconstrain and a
+  module CIL can't add one, so the `terminate_app` kill -0 probe is not
+  category-scoped (LESSONS
+  #33). SIGHUP re-execs preserve the range; a failed narrowing
+  degrades to a no-MCS run. In unconfined mode every mechanism is a
+  no-op. Details: `selinux/README.md` ("Per-instance MCS"), decision
+  #38.
+- **In-sandbox debugging (task 8.7, v2.33) is a two-layer gate with AND
+  semantics:** (1) *per-sandbox, default on* — for every run except
+  `--debug`, B stacks a second classic-BPF seccomp filter *after* nono's
+  notify filter (newest-first, so it is checked first):
+  `SECCOMP_RET_ALLOW` for everything except `ptrace` → `EPERM`
+  (`--debug` skips the install: `Seccomp_filters: 2` → `1`; the X32
+  guard bit lives in the syscall *number*, not the arch — LESSONS #80).
+  (2) *global, default off* — the CIL boolean `apse_app_ptrace`
+  (root-only, `setsebool -P`) gates the `apse_app_t` **self**-grant
+  `(process (ptrace))` (the debugger execs into `apse_app_t` exactly
+  like its target), bounded to the run's own process tree by the MCS
+  `cN`. `run --debug` in confined mode reads the boolean unprivileged
+  before building and fail-fasts with an actionable message (the read
+  itself needed a `security_t` `search`/`read` grant — LESSONS #79).
+  Host-side `strace -p`/`gdb -p` from unconfined are unaffected.
+  Details: `selinux/README.md` ("In-sandbox debugging").
 - GPU: `/dev/dri/renderD*` nodes are bind-mounted into the sandbox's
   `/dev`; the user must be in the `render` group. `/dev` nodes are
-  **bind-mounted, not mknod'd**, so the SELinux module (`selinux/`) can use
-  the canonical genfs labels.
-- **SIGHUP semantics are mode-dependent (merge reconciliation):**
-  `run` forwards SIGHUP to the app and exits 129 (decision #33 — there
-  is no in-place rebuild of a live sandbox); the `wayland` modes
-  (tag-and-park, proxy) treat SIGHUP as a *rebuild*: an in-place
-  re-exec in `--listen` mode (`/proc/self/exe`, same pid, fresh
-  compositor connection and tag), or a clean exit for a systemd
-  restart when socket-activated (the activated fd may not survive an
-  `execve`). See `proxy::run_signal_loop` / `proxy::re_exec`.
+  **bind-mounted, not mknod'd**, so the SELinux module (`selinux/`) can
+  use the canonical genfs labels.
+- **SIGHUP semantics are mode-dependent (merge reconciliation):** `run`
+  forwards SIGHUP to the app and exits 129 (decision #33 — there is no
+  in-place rebuild of a live sandbox); the `wayland` modes
+  (tag-and-park, proxy) treat SIGHUP as a *rebuild*: an in-place re-exec
+  in `--listen` mode (`/proc/self/exe`, same pid, fresh compositor
+  connection and tag), or a clean exit for a systemd restart when
+  socket-activated (the activated fd may not survive an `execve`). See
+  `proxy::run_signal_loop` / `proxy::re_exec`.
 - The proxy/broker signalfd loops block **every** signal except the
   seven kernel-generated fatal faults. The mask must be built from
-  `SigSet::all()` (sigfillset, all 64 bits) minus those seven — never
-  by iterating nix's `Signal` enum, which stops at 31 and would leave
-  the real-time range (34-64) at its default-terminate disposition,
-  letting a same-uid process kill apse with `kill -34` (see
+  `SigSet::all()` (sigfillset, all 64 bits) minus those seven — never by
+  iterating nix's `Signal` enum, which stops at 31 and would leave the
+  real-time range (34-64) at its default-terminate disposition, letting
+  a same-uid process kill apse with `kill -34` (see
   `proxy::proxy_signal_mask`).
 - The supervisor services **every** trapped notification on the
   listener: `handle_notif` dispatches by syscall number with no pid
@@ -365,12 +345,12 @@ phase 8.1).**
   after 2 s, since pidns-init ignores default-action signals, #13/#33);
   SIGHUP also terminates the app and exits 129. S sends `READY=1` to
   systemd after the handoff and untags the Wayland socket on teardown.
-- The `--proxy` relay is convention-adaptive: Rust wayland-backend
-  uses display=ID 1, client IDs from 2, server IDs from 0xFF00_0000;
-  C libwayland uses display=ID 0, client IDs from 1, server IDs from
-  0x80000000. The first message of a connection pins the convention
-  for both ends (`src/proxy/objects.rs`). Events use the raw 0-based
-  index in the interface's event list — not `requests.len()+index`.
+- The `--proxy` relay is convention-adaptive: Rust wayland-backend uses
+  display=ID 1, client IDs from 2, server IDs from 0xFF00_0000; C
+  libwayland uses display=ID 0, client IDs from 1, server IDs from
+  0x80000000. The first message of a connection pins the convention for
+  both ends (`src/proxy/objects.rs`). Events use the raw 0-based index
+  in the interface's event list — not `requests.len()+index`.
 - The relay's fd sanity check treats only in-memory channels
   (memfd/pipe/socket, via `/proc/self/fd/<n>` readlink) as valid
   `receive` targets; a path is a fatal protocol error.
@@ -381,79 +361,55 @@ phase 8.1).**
   (request/response, the consent prompt — the daemon answers after the
   user decides) and `clipboard-write` (one-way, Phase 6 — the daemon
   fires `notify-send` and closes with no reply). The write notification
-  is fire-and-forget and fails open: the relay's `notify_write` uses a
-  2 s deadline and never blocks or alters the write. The *user's*
-  answer travels over a second, session-scoped socket
-  (`$XDG_RUNTIME_DIR/apse/decision.sock`): `apse decide` lists
-  the pending prompts (oldest first, each with an id) or resolves the
-  oldest — or the one `--prompt <id>` names. A decided prompt leaves
-  the queue atomically with its decision; an unbound decision socket
-  degrades the broker (prompts deny at once, `no-decision-socket`),
-  and `--auto-decide` mode never binds it.
-- Rust edition 2024; deps are pinned in Cargo.lock. `nono` is
-  Apache-2.0 (compatible with this repo's AGPL-3.0); its docs are thin,
-  the crate source is the reference.
+  is fire-and-forget and fails open: the relay's `notify_write` uses a 2
+  s deadline and never blocks or alters the write. The *user's* answer
+  travels over a second, session-scoped socket
+  (`$XDG_RUNTIME_DIR/apse/decision.sock`): `apse decide` lists the
+  pending prompts (oldest first, each with an id) or resolves the oldest
+  — or the one `--prompt <id>` names. A decided prompt leaves the queue
+  atomically with its decision; an unbound decision socket degrades the
+  broker (prompts deny at once, `no-decision-socket`), and
+  `--auto-decide` mode never binds it.
+- Rust edition 2024; deps are pinned in Cargo.lock. `nono` is Apache-2.0
+  (compatible with this repo's AGPL-3.0); its docs are thin, the crate
+  source is the reference.
 - **Run the test suite single-threaded: `cargo test --locked --
   --test-threads=1` (CI already does this).** Several tests mutate the
   process environment (`std::env::set_var`/`remove_var`) and the sandbox
-  tests `fork(2)`; both are unsafe with other test threads running —
-  the env mutation is UB against any concurrent `getenv` (flaky
-  socket-activation failures), and a lingering multi-thread tokio runtime
-  across the fork deadlocks on `std`'s global `thread_info` lock (a hung
-  whole suite). Single-threading removes both at ~no cost (the suite is
-  dominated by the `SANDBOX_LOCK`-serialised sandbox tests). See
-  LESSONS.md #15/#16.
-- This is a personal WIP repo: the rework is phase-by-phase (PLAN.md),
-  each phase committed and working. Phase 5.5 (the Firefox e2e) and
-  7.2 (the `dbus-proxy` sidecar), 7.3 (the `xwayland` satellite),
-  8.4 (the integration test suite) and 8.5 (the threat-model review)
-  are done; phase 8.2 landed the SELinux module (`selinux/` —
-  `apse_t`/`apse_app_t`/the xserver_t fix, written directly in
-  CIL, installed and tuning-looped to zero denials — see the
-  "Per-instance MCS" fact above for what it actually isolates).
-  The full chain is verified at probe level (a sandboxed
-  `wayland-info` through the `--proxy` relay into live sway) and,
-  under **enforcing mode**, with a real GUI app: `foot` rendered
-  through the `--proxy` relay into live sway with zero denials
-  across the whole boot+render cycle (v2.14 — the enforcing-mode
-  tuning closed five gap classes, decisions #39–#40 and LESSONS
-  #34–#36: devpts `MS_NODEV`, the `run` teardown sparing live
-  sidecar sockets, the relay's receive-side `fd:use`/`file` grants
-  for `SCM_RIGHTS` (a dropped fd is silent `MSG_CTRUNC`), the
-  fresh-tmpfs symlink label trap, and the `dir` `open`/`read`
-  distinction).
-  The decision-#42 `PR_SET_PDEATHSIG` cascade is field-verified on
-  both legs (v2.17, LESSONS #44): SIGKILL S → the belt's USR1, A's
-  handler tears B down; SIGKILL A → the belt delivers USR1 into B
-  (the strace signature `si_code=SI_USER`, `si_pid=0` is the
-  cross-pidns pdeathsig marker — the delivery is kernel-internal and
-  invisible to the audit exit filter), and the `AppKillGuard` sweep
-  ends the run with no orphans; the one piece not cleanly isolated
-  is B's own USR1-terminate disposition (B resumed via
-  `restart_syscall` — an `SA_RESTART` action is suspected from the
-  Rust ELF/dynamic-linker startup), which is not load-bearing while
-  the guard exists.  6.5.5 (the `serve`-label drag refinement)
-  landed in v2.19 (2026-11-04, LESSONS #47); next up, 6.4 (the
-  varlink tier) stays parked until a released systemd ships `PIDs`
-  in `StartTransient` (re-checked 2026-11-04: v263 is still in
-  development; Fedora 45's 262.1 has no user-bus varlink socket).
-  (Done in this pass: the `dbus-proxy`/`xwayland` satellites and
-  the broker are now **field-verified in confined mode** —
-  enforcing, kernel 7.2.15: the Xwayland satellite boots the
-  server to a full session, real X clients work through the
-  per-instance socket, teardown is clean, zero denials — LESSONS
-  #45-#46.) The AppArmor second-layer design (the no-SELinux
-  analogue; baseline needs no changes on AppArmor machines) is
-  parked in `docs/apparmor.md` — the open question that shapes it
-  (a `change_profile` exec clearing `PR_SET_PDEATHSIG`) is in
-  §2.2.
+  tests `fork(2)`; both are unsafe with other test threads running — the
+  env mutation is UB against any concurrent `getenv` (flaky
+  socket-activation failures), and a lingering multi-thread tokio
+  runtime across the fork deadlocks on `std`'s global `thread_info` lock
+  (a hung whole suite). Single-threading removes both at ~no cost (the
+  suite is dominated by the `SANDBOX_LOCK`-serialised sandbox tests).
+  See LESSONS.md #15/#16.
+- **This is a personal WIP repo: the rework is phase-by-phase (PLAN.md),
+  each phase committed and working.** Done: 5.5 (the Firefox e2e),
+  7.2/7.3 (the `dbus-proxy`/`xwayland` satellites), 8.2 (the SELinux
+  module — see the "Per-instance MCS" fact above for what it actually
+  isolates), 8.4 (the integration test suite), 8.5 (the threat-model
+  review). Verification level: the full chain is verified at probe level
+  (a sandboxed `wayland-info` through the `--proxy` relay into live
+  sway) and, under **enforcing mode**, with a real GUI app: `foot`
+  rendered through the relay with zero denials across the whole
+  boot+render cycle (v2.14; the five enforcing-mode gap classes are in
+  PLAN.md decisions #39–#40 and LESSONS #34–#36). The decision-#42
+  `PR_SET_PDEATHSIG` cascade is field-verified on both legs (v2.17,
+  LESSONS #44) — SIGKILL S tears B down, SIGKILL A ends the run with no
+  orphans via the `AppKillGuard` sweep. The satellites and the broker
+  are **field-verified in confined mode** (enforcing, kernel 7.2.15 —
+  LESSONS #45-#46). Parked: 6.4 (the varlink tier, until a released
+  systemd ships `PIDs` in `StartTransient` — re-checked 2026-11-04: v263
+  is still in development; Fedora 45's 262.1 has no user-bus varlink
+  socket) and the AppArmor second layer (`docs/apparmor.md`; the
+  `change_profile`-clears-`PR_SET_PDEATHSIG` question is in §2.2).
 
 ## Commit conventions
 
 - Small commits, one per meaningful change, committed as you go.
 - Subject: `<emoji> <type>: <summary>` — a conventional type prefix
   (`feat:`, `fix:`, `chore:`, `docs:`, …) and a summary under 72 chars.
-  The single emoji is chosen per change to capture what actually changed;
-  there is no fixed set of allowed emojis.
+  The single emoji is chosen per change to capture what actually
+  changed; there is no fixed set of allowed emojis.
 - End the message with an `Assisted-by: <agent>:<model>` trailer (no
   "generated with" line).
