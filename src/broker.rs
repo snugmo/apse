@@ -88,8 +88,6 @@ use log::{info, warn};
 use rustix::event::{PollFd, PollFlags, poll};
 use serde::{Deserialize, Serialize};
 
-/// The broker's default wait for the user's decision.
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The intent window the broker offers on an allow (milliseconds):
 /// what the proxy passes to [`crate::proxy::clipboard::ClipboardGate::unlock`].
 pub const INTENT_WINDOW_MS: u64 = 1500;
