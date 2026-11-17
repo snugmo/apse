@@ -1044,3 +1044,12 @@ write-up.
     `matchpathcon`/`restorecon`, which the filetrans alone never does. —
     *`apse_xsocket_t` design (2026-11-15, decision #47); the 7.2.15 kernel
     source (`selinux_sock_graft`) and the installed 3.11 filecon table.*
+
+87. **nix 0.32 gated `getuid`/`getgid`/`getgroups` behind a new `user`
+    feature (they were ungated in 0.31).** The other 0.32 breaking
+    changes — `sys::socket::accept`/`accept4` returning `OwnedFd` and
+    taking `AsFd`, `fcntl::vmsplice` going `unsafe` — are unused here,
+    so only the feature list needed `user` added. Note the graph now
+    carries *two* nix versions (0.32 for apse, 0.31.x for nono's linux
+    target dep) — expected, not a conflict. — *nix 0.32.0 changelog
+    (`user` feature gate, `accept` → `OwnedFd`).*
