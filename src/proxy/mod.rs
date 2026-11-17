@@ -1503,10 +1503,16 @@ pub fn re_exec() -> io::Result<()> {
     crate::mcs::preserve_range().map_err(|e| {
         io::Error::other(format!("preserving the MCS range across the re-exec: {e}"))
     })?;
-    nix::unistd::execve(exe, &argv, &env)
-        .map_err(|e| io::Error::other(format!("re-exec (execve of /proc/self/exe) failed: {e}")))?;
-    // execve returns Result<Infallible>: success never returns.
-    unreachable!("execve succeeded, but it never returns")
+    // execve returns Result<Infallible>: success never returns, so only
+    // the error path continues (as the function's tail expression).
+    match nix::unistd::execve(exe, &argv, &env) {
+        Err(e) => {
+            return Err(io::Error::other(format!(
+                "re-exec (execve of /proc/self/exe) failed: {e}"
+            )))
+        }
+        Ok(_) => unreachable!("execve succeeded, but it never returns"),
+    }
 }
 
 /// Block on a signalfd until the process should stop or rebuild.
