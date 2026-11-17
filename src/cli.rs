@@ -1001,7 +1001,6 @@ mod tests {
     #[test]
     fn wayland_notify_copy_out_requires_proxy_and_broker_socket() {
         without_apse_env(|| {
-            // Without --proxy.
             let cli = Cli::try_parse_from([
                 "apse",
                 "wayland",
@@ -1045,7 +1044,6 @@ mod tests {
                 .expect_err("--notify-copy-out without --broker-socket must be rejected");
             assert!(err.to_string().contains("--broker-socket"), "{err}");
 
-            // With both: valid.
             let cli = Cli::try_parse_from([
                 "apse",
                 "wayland",
@@ -1088,12 +1086,10 @@ mod tests {
                 "--sandbox-engine",
                 "apse",
             ];
-            // Default.
             let args = parse_wayland(&base).expect("the default policy must parse");
             assert_eq!(args.clipboard_policy, "allow");
             let cli = Cli::try_parse_from(base).expect("the default policy validates");
             cli.validate().expect("the default policy validates");
-            // Explicit deny in proxy mode is fine.
             let mut argv: Vec<&str> = base.to_vec();
             argv.extend(["--clipboard-policy", "deny"]);
             let args = parse_wayland(&argv).expect("an explicit deny must parse");
