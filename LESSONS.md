@@ -1071,3 +1071,14 @@ write-up.
     `ausearch -m avc` over a source reading. — *the first
     `--no-selinux` run's audit trail (enforcing, 7.2.15),
     `security/selinux/hooks.c`.*
+
+89. **User-visible text that embeds a CLI invocation is a second CLI
+    surface.** The broker's consent-notification body carries a
+    ready-made reply command; the 7.1 subcommand rename (the branch-era
+    global `--decide` flag → the `decide` subcommand) rewrote the
+    units and the docs but not that body, so the one command a user
+    copy-pastes out of the *only* documented channel no longer parsed.
+    The fix pins the body in a unit-tested `prompt_body`. When a CLI
+    grammar changes, grep the tree — notification bodies included —
+    for embedded invocations. — *the 7.1 rename's leftover
+    (2026-11-18); the same class as #49 (baked header lettering).*
