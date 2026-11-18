@@ -65,6 +65,17 @@ fn main() -> Result<()> {
         // `run`: exec the command inside the sandbox and exit with
         // its exit code.
         Command::Run(args) => {
+            // Task 8.6: `--no-selinux` (or the `APSE_NO_SELINUX`
+            // env var) — the one-time self re-exec to the binary's
+            // stock label, *before* anything else: the MCS
+            // narrowing inside `run_sandboxed` must not run first
+            // (an exec context can only narrow the range, and the
+            // stock context carries the user's full spawn range),
+            // and every later stage then runs in unconfined mode.
+            // A no-op in unconfined mode.
+            if args.no_selinux || no_selinux_from_env() {
+                apse::mcs::self_reexec_to_stock()?;
+            }
             // Task 8.7: `--debug` in confined mode also requires
             // the module's `apse_app_ptrace` boolean (SELinux has
             // no per-invocation policy — the boolean is the global
@@ -127,6 +138,17 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The `APSE_NO_SELINUX` env var: an alternative trigger for
+/// `--no-selinux` (a wrapper script or a unit can switch the
+/// invocation without touching the command line). Enabled by any
+/// non-empty value other than `0`.
+fn no_selinux_from_env() -> bool {
+    match std::env::var_os("APSE_NO_SELINUX") {
+        Some(v) => !v.is_empty() && v != "0",
+        None => false,
+    }
 }
 
 /// READY without unsetting NOTIFY_SOCKET: the `wayland` modes may
@@ -593,9 +615,9 @@ fn format_secs(ms: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::policy_from_cli;
+    use super::{no_selinux_from_env, policy_from_cli};
     use crate::sandbox::userns::tests::run_in_child;
-    use crate::testutil::TmpDir;
+    use crate::testutil::{TmpDir, with_env};
     use apse::pdeathsig::{ensure_shim, get, set};
     use nix::sys::wait::waitpid;
     use nix::unistd::{ForkResult, fork};
@@ -784,5 +806,26 @@ int main(void) {
             Some(0),
             "the shim must re-arm 10 across the exec:\n{out}\n{err}"
         );
+    }
+
+    /// Task 8.6: the `APSE_NO_SELINUX` env var enables the stock
+    /// re-exec for any non-empty value other than `0` (unset and
+    /// the empty string disable it, like the flag's absence).
+    #[test]
+    fn no_selinux_env_var_semantics() {
+        with_env(&[("APSE_NO_SELINUX", None)], || {
+            assert!(!no_selinux_from_env(), "unset must disable");
+        });
+        with_env(&[("APSE_NO_SELINUX", Some(""))], || {
+            assert!(!no_selinux_from_env(), "the empty value must disable");
+        });
+        with_env(&[("APSE_NO_SELINUX", Some("0"))], || {
+            assert!(!no_selinux_from_env(), "`0` must disable");
+        });
+        for v in ["1", "true", "yes", "on", "whatever"] {
+            with_env(&[("APSE_NO_SELINUX", Some(v))], || {
+                assert!(no_selinux_from_env(), "APSE_NO_SELINUX={v} must enable");
+            });
+        }
     }
 }

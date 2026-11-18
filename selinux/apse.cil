@@ -458,6 +458,22 @@
 (allow apse_t tmp_t (sock_file (create getattr open read write unlink setattr)))
 (allow apse_t cgroup_t (dir (create getattr open search read write add_name remove_name rmdir)))
 (allow apse_t cgroup_t (file (getattr open read write)))
+; task 8.6 (`--no-selinux`): the one-time self re-exec to the
+; binary's stock type. The `/proc/self/attr/exec` write itself needs
+; only the self `process:setexec` (the self-grant above) — an
+; *explicit* exec context skips the typetransition table at exec
+; time (`selinux_bprm_creds_for_exec` takes the pending `exec_sid`
+; as the new SID directly, no `type_transition` rule is consulted),
+; so the only new permission is the `process:transition` check the
+; exec performs when the SID changes (old→new); the second exec-time
+; check, `file:entrypoint` (new → file), is already granted by the
+; stock `unconfined_t → apse_exec_t` entrypoint rule above. No
+; `noatsecure` is needed: the re-exec targets the same non-setuid
+; binary. After the exec the process is `unconfined_t` (the loop
+; guard in `mcs::self_reexec_to_stock` is the type check itself, so
+; the second pass is a no-op) and `preserve_range` skips the pending
+; explicit context, so the stock one survives the re-exec.
+(allow apse_t unconfined_t (process (transition)))
 (allow apse_t unconfined_t (system (start)))
 (allow apse_t unconfined_t (fd (use)))
 ; host-side apse stdout/stderr go through shell-created pipes

@@ -181,6 +181,18 @@ pub(crate) struct RunArgs {
     /// SELinux boolean (root: `setsebool -P apse_app_ptrace on`)
     #[arg(long)]
     pub(crate) debug: bool,
+    /// Run this invocation outside the apse SELinux module: a
+    /// one-time self re-exec to the binary's stock label
+    /// (`unconfined_t`), so the whole pipeline and the app behave
+    /// as if the module were not installed (no MCS narrowing, no
+    /// exec-context writes). Every other confinement — the
+    /// namespaces, the rebuilt rootfs, Landlock, the seccomp filter
+    /// — stays, and the system's SELinux enforcement is unaffected.
+    /// Also enabled by the `APSE_NO_SELINUX` env var (any non-empty
+    /// value other than `0`); a no-op when the module is not active
+    /// (the binary not relabeled to `apse_exec_t`)
+    #[arg(long)]
+    pub(crate) no_selinux: bool,
     /// Command and its arguments, run inside the sandbox
     /// (everything after `--`; e.g. `apse run -- /bin/sh -c 'id'`)
     #[arg(trailing_var_arg = true, required = true)]

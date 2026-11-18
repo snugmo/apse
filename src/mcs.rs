@@ -139,10 +139,11 @@ pub fn require_ptrace_boolean() -> Result<()> {
     }
 }
 
-/// Write the process' exec context (the setexecfilecon equivalent).
-/// The kernel validates the context on the *exec*; a write failure
-/// here (bad type, out-of-range category) degrades the caller to a
-/// run without MCS.
+/// Write the process' exec context (the setexecfilecon
+/// equivalent). The kernel validates the context on the *exec*; a
+/// write failure here (bad type, out-of-range category) degrades
+/// the caller (MCS narrowing) or fails the run (the stock
+/// re-exec) at the call site.
 ///
 /// The open deliberately omits `O_CREAT`: the file always exists
 /// (procfs instantiates it on lookup), while `O_CREAT` turns the
@@ -156,20 +157,11 @@ fn write_exec_context(ctx: &str) -> io::Result<()> {
     use std::io::Write;
     let mut b = ctx.as_bytes().to_vec();
     b.push(0); // attr files take NUL-terminated contexts
-    let res = (|| {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open("/proc/self/attr/exec")?;
-        f.write_all(&b)
-    })();
-    res.map_err(|e| {
-        io::Error::other(format!(
-            "writing /proc/self/attr/exec ({ctx:?}): {e} — the module may \
-             not be installed or the category may be out of the user's \
-             range; continuing without per-instance MCS"
-        ))
-    })
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open("/proc/self/attr/exec")?;
+    f.write_all(&b)
 }
 
 /// S (and the standalone proxy/satellites): narrow our own range to
@@ -209,6 +201,71 @@ pub fn self_reexec_to_s0() -> Result<()> {
     self_reexec_to_range("s0")
 }
 
+/// Task 8.6: the type the **stock** (unrelabeled) binary takes —
+/// `selinux/README.md`, "Operating modes": unconfined mode runs
+/// the whole stack `unconfined_t`. A box whose stock filecon gives
+/// the binary a different type must pin the exact context and
+/// update this constant (the task-8.6 verify does).
+const STOCK_TYPE: &str = "unconfined_t";
+
+/// Task 8.6 (`--no-selinux` / `APSE_NO_SELINUX`): run *this
+/// invocation* outside the apse SELinux module — a one-time self
+/// re-exec to the binary's **stock** context: [`STOCK_TYPE`] with
+/// the process's **current** range. The re-exec'd process (and
+/// everything it forks) is then exactly what the unrelabeled
+/// binary would be: no MCS narrowing, no shim, no exec-context
+/// writes, and the app keeps its own file label.
+///
+/// Must run *before* the MCS narrowing: the stock context carries
+/// the user's **full** spawn range, and a process may only
+/// *narrow* its range through an exec context — a widening write
+/// is refused, so this has to happen while S still holds the full
+/// range (it is the first thing the `run` pipeline does).
+///
+/// No-op in unconfined mode — and that is also the loop guard:
+/// the re-exec preserves argv (the flag is still present on the
+/// second pass), but the label is now the stock type, not
+/// `apse_t`.
+///
+/// The kernel checks the target context *lazily* (7.2,
+/// `security/selinux/hooks.c`): the write to `/proc/self/attr/exec`
+/// needs only the self `process:setexec` (the module's `apse_t`
+/// self grant), while `selinux_bprm_creds_for_exec` checks, at the
+/// re-exec, `process:transition` from `apse_t` to the stock type
+/// (the module's rule for it) and `file:entrypoint` on the
+/// executed file (`unconfined_t` on `apse_exec_t` — already
+/// granted for the normal `unconfined_t → apse_t` transition).
+/// The explicit context does *not* consult the `type_transition`
+/// table — there is no transition rule to add beyond the
+/// permission.
+///
+/// A failure here (the installed module lacks the transition — an
+/// older version, or a stock-type mismatch) is a **hard error**:
+/// this run was explicitly asked to be *un*confined, so silently
+/// degrading to confined would be the opposite of the request.
+pub fn self_reexec_to_stock() -> Result<()> {
+    let Some((user, role, ty, range)) = current_label() else {
+        return Ok(());
+    };
+    if ty != "apse_t" {
+        return Ok(()); // unconfined mode (and the loop guard)
+    }
+    let ctx = format!("{user}:{role}:{STOCK_TYPE}:{range}");
+    write_exec_context(&ctx).map_err(|e| {
+        anyhow::anyhow!(
+            "writing /proc/self/attr/exec ({ctx}): {e} — the module may \
+             not grant the {ty} → {STOCK_TYPE} transition"
+        )
+    })?;
+    crate::proxy::re_exec().with_context(|| {
+        format!(
+            "--no-selinux re-exec (execve of /proc/self/exe) refused: the \
+             module may not allow the {ty} → {STOCK_TYPE} transition (is \
+             the installed module current?)"
+        )
+    })
+}
+
 /// The one-time self re-exec to a target range, shared by
 /// [`self_reexec_with_category`] (an instance's `s0-s0:cN`) and
 /// [`self_reexec_to_s0`] (the broker's `s0`).
@@ -235,8 +292,13 @@ fn self_reexec_to_range(target: &str) -> Result<()> {
     if range == target {
         return Ok(()); // already at the target (post-re-exec invocation)
     }
-    if let Err(e) = write_exec_context(&format!("{user}:{role}:apse_t:{target}")) {
-        log::warn!("{e}");
+    let ctx = format!("{user}:{role}:apse_t:{target}");
+    if let Err(e) = write_exec_context(&ctx) {
+        log::warn!(
+            "writing /proc/self/attr/exec ({ctx}): {e} — the module may \
+             not be installed or the category may be out of the user's \
+             range; continuing without per-instance MCS"
+        );
         return Ok(());
     }
     // `re_exec`'s `preserve_range` skips a pending explicit context
@@ -256,8 +318,13 @@ pub fn set_exec_context(target_type: &str) -> Result<()> {
     if ty != "apse_t" {
         return Ok(()); // unconfined mode: keep the stock behavior
     }
-    write_exec_context(&format!("{user}:{role}:{target_type}:{range}"))
-        .map_err(|e| anyhow::anyhow!("{e} — continuing the exec without the per-instance range"))
+    let ctx = format!("{user}:{role}:{target_type}:{range}");
+    write_exec_context(&ctx).map_err(|e| {
+        anyhow::anyhow!(
+            "writing /proc/self/attr/exec ({ctx}): {e} — continuing the \
+             exec without the per-instance range"
+        )
+    })
 }
 
 /// Preserve the current label (type *and* range) across a
@@ -285,8 +352,12 @@ pub fn preserve_range() -> Result<()> {
     if !pending.is_empty() && pending != "default" {
         return Ok(()); // an explicit context is already set; keep it
     }
-    write_exec_context(&format!("{user}:{role}:{ty}:{range}")).map_err(|e| {
-        anyhow::anyhow!("{e} — the re-exec will reset the range to the file context's")
+    let ctx = format!("{user}:{role}:{ty}:{range}");
+    write_exec_context(&ctx).map_err(|e| {
+        anyhow::anyhow!(
+            "writing /proc/self/attr/exec ({ctx}): {e} — the re-exec will \
+             reset the range to the file context's"
+        )
     })
 }
 
@@ -341,5 +412,19 @@ mod tests {
             instance_category("claw", "1"),
             instance_category("claw", "2")
         );
+    }
+
+    /// Task 8.6: the stock re-exec must be a no-op in unconfined
+    /// mode (this suite's own label is not `apse_t` — the test
+    /// binaries are never relabeled), and *that* is what keeps it
+    /// safe to call: if the guard ever failed in a confined
+    /// environment, the call would re-exec the test binary.
+    #[test]
+    fn stock_reexec_is_a_noop_when_unconfined() {
+        assert!(
+            !is_confined(),
+            "the suite must not run confined (the stock re-exec would re-exec the test binary)"
+        );
+        self_reexec_to_stock().expect("a no-op in unconfined mode");
     }
 }

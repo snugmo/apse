@@ -137,6 +137,7 @@ pub fn without_apse_env(f: impl FnOnce()) {
             ("APSE_BROKER_SOCKET", None),
             ("APSE_NOTIFY_COPY_OUT", None),
             ("APSE_BROKER_TIMEOUT_MILLIS", None),
+            ("APSE_NO_SELINUX", None),
         ],
         f,
     );

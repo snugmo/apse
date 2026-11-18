@@ -193,7 +193,30 @@ After that every `apse` subcommand runs as `apse_t`; the sandboxed app
 and the helpers it or the pipeline exec run as `apse_app_t`; Xwayland
 runs as `xserver_t`. The hard boundary of the sandbox is still the
 namespaces + nono landlock/seccomp (decision #27) — the module is a
-second, compositable layer. If an app binary carries a type other than
+second, compositable layer.
+
+**Per-invocation opt-out (task 8.6, `--no-selinux`).** A confined
+binary can run *one* invocation outside the module without any
+relabeling: the flag (or the `APSE_NO_SELINUX` env var, any non-empty
+value other than `0`) makes `main` write the pre-module exec context
+— the binary's stock type (`unconfined_t`, whatever a never-relabeled
+install carries) with the process's current range — to
+`/proc/self/attr/exec` and re-exec `/proc/self/exe` with the original
+argv, once, *before* the MCS narrowing (an exec context can only
+*narrow* the range, so the full-range stock context must be written
+first). From there the whole pipeline and the app behave exactly as in
+the unconfined mode above — no MCS, no shim, no exec-context writes,
+the app keeps its own file label — while every other confinement (the
+namespaces, the rebuilt rootfs, Landlock, the seccomp filter) stays
+and the system's SELinux enforcement is untouched. The module grants
+the one rule the re-exec needs (the `apse_t → unconfined_t`
+`process:transition` allow in `apse.cil`; the exec-time
+`file:entrypoint` side is the stock launch grant, and no
+`type_transition` rule is needed because an explicit exec context
+bypasses the transition table). The loop guard is the type check
+itself: after the re-exec the label is no longer `apse_t`, so a second
+pass is a no-op. In unconfined mode (the binary not relabeled) the
+flag is a no-op. If an app binary carries a type other than
 `bin_t`/`shell_exec_t`/`apse_state_t` (check with `ls -lZ <app>`), add a
 `(typetransition apse_t TYPE process apse_app_t)` line (plus the matching
 process/file allows) to `apse.cil` and reinstall.
