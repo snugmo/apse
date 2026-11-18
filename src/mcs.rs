@@ -234,10 +234,15 @@ const STOCK_TYPE: &str = "unconfined_t";
 /// re-exec, `process:transition` from `apse_t` to the stock type
 /// (the module's rule for it) and `file:entrypoint` on the
 /// executed file (`unconfined_t` on `apse_exec_t` — already
-/// granted for the normal `unconfined_t → apse_t` transition).
-/// The explicit context does *not* consult the `type_transition`
-/// table — there is no transition rule to add beyond the
-/// permission.
+/// granted for the normal `unconfined_t → apse_t` transition) —
+/// plus `noatsecure`/`rlimitinh`/`siginh`, which the kernel checks
+/// on any SID-changing exec (the same trio the MCS self-narrowing
+/// re-exec passes via the `apse_t` self-grant; the module grants
+/// them on this transition too — the target is the same non-setuid
+/// binary and uid, so the exec is deliberately not put into secure
+/// mode). The explicit context does *not* consult the
+/// `type_transition` table — there is no transition rule to add
+/// beyond the permissions.
 ///
 /// A failure here (the installed module lacks the transition — an
 /// older version, or a stock-type mismatch) is a **hard error**:

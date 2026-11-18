@@ -463,17 +463,23 @@
 ; only the self `process:setexec` (the self-grant above) — an
 ; *explicit* exec context skips the typetransition table at exec
 ; time (`selinux_bprm_creds_for_exec` takes the pending `exec_sid`
-; as the new SID directly, no `type_transition` rule is consulted),
-; so the only new permission is the `process:transition` check the
-; exec performs when the SID changes (old→new); the second exec-time
-; check, `file:entrypoint` (new → file), is already granted by the
-; stock `unconfined_t → apse_exec_t` entrypoint rule above. No
-; `noatsecure` is needed: the re-exec targets the same non-setuid
-; binary. After the exec the process is `unconfined_t` (the loop
-; guard in `mcs::self_reexec_to_stock` is the type check itself, so
-; the second pass is a no-op) and `preserve_range` skips the pending
-; explicit context, so the stock one survives the re-exec.
-(allow apse_t unconfined_t (process (transition)))
+; as the new SID directly, no `type_transition` rule is consulted).
+; The exec-time checks for the SID change (7.2, verified in the
+; audit trail of the first `--no-selinux` run, 2026-11-18):
+; `process:transition` (old→new, this rule) and `file:entrypoint`
+; (new → file, already the stock `unconfined_t → apse_exec_t` grant
+; above) — plus `noatsecure` (a denial flips the exec into secure
+; mode), `rlimitinh` and `siginh` (keep the supervisor's rlimit and
+; signal state across the exec). Those three are exactly what the
+; MCS self-narrowing re-exec gets from the `apse_t` self-grant, for
+; the same reason: the target is the same non-setuid binary and the
+; same uid — no privilege change, so the transition is deliberately
+; *not* treated as secure. After the exec the process is
+; `unconfined_t` (the loop guard in `mcs::self_reexec_to_stock` is
+; the type check itself, so the second pass is a no-op) and
+; `preserve_range` skips the pending explicit context, so the stock
+; one survives the re-exec.
+(allow apse_t unconfined_t (process (noatsecure rlimitinh siginh transition)))
 (allow apse_t unconfined_t (system (start)))
 (allow apse_t unconfined_t (fd (use)))
 ; host-side apse stdout/stderr go through shell-created pipes

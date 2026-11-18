@@ -209,11 +209,14 @@ the unconfined mode above — no MCS, no shim, no exec-context writes,
 the app keeps its own file label — while every other confinement (the
 namespaces, the rebuilt rootfs, Landlock, the seccomp filter) stays
 and the system's SELinux enforcement is untouched. The module grants
-the one rule the re-exec needs (the `apse_t → unconfined_t`
-`process:transition` allow in `apse.cil`; the exec-time
-`file:entrypoint` side is the stock launch grant, and no
-`type_transition` rule is needed because an explicit exec context
-bypasses the transition table). The loop guard is the type check
+one rule for it (the `apse_t → unconfined_t` process allow in
+`apse.cil`: `transition` for the SID change, plus `noatsecure` /
+`rlimitinh` / `siginh` — the same trio the MCS self-narrowing
+re-exec gets from the `apse_t` self-grant; a self-exec of the same
+non-setuid binary is not a privilege change, so it is deliberately
+not run in secure mode. The `file:entrypoint` side is the stock
+launch grant, and no `type_transition` rule is needed because an
+explicit exec context bypasses the transition table). The loop guard is the type check
 itself: after the re-exec the label is no longer `apse_t`, so a second
 pass is a no-op. In unconfined mode (the binary not relabeled) the
 flag is a no-op. If an app binary carries a type other than
