@@ -252,19 +252,32 @@ policy's `default_range` rules (LESSONS #29):
   kill -0 (used by `terminate_app`'s liveness probe) is *not*
   category-scoped (LESSONS #33); it cannot be closed in the module,
   because libsepol's CIL reader rejects `mlsconstrain` in a module CIL.
-- **Objects are *not* isolated, per-instance.** A `dir`/`file`/
-  `sock_file` created under the user's runtime dir takes the *parent's*
-  low level, not the creator's range (`default_range … target low` →
-  `mls_context_cpy_low(newcontext, tcontext)`), and the parent
-  (`/run/user/<uid>`) is plain `s0`. So the instance dir, the build
-  scratch, and every per-instance socket are all `s0`, and any `cN` (or
-  `s0`) subject dominates `s0` — every instance and the broker may read
-  and write them. There is **no** MCS file/dir separation between
-  instances: *content* isolation comes from the namespaces + landlock
-  rootfs (each sandbox sees only its own instance dir), not from SELinux.
-  The `socket` and `fd` classes are also **not** in the base constrain
-  list, so the broker's session sockets and inherited fds keep working
-  across categories.
+- **Objects are *not* isolated, per-instance** — with one exception. A
+  `dir`/`file`/`sock_file` created under the user's runtime dir takes the
+  *parent's* low level, not the creator's range (`default_range …
+  target low` → `mls_context_cpy_low(newcontext, tcontext)`), and the
+  parent (`/run/user/<uid>`) is plain `s0`. So the instance dir, the
+  build scratch, and every per-instance socket are all `s0`, and any
+  `cN` (or `s0`) subject dominates `s0` — every instance and the broker
+  may read and write them. There is **no** MCS file/dir separation
+  between instances: *content* isolation comes from the namespaces +
+  landlock rootfs (each sandbox sees only its own instance dir), not
+  from SELinux. The `socket` and `fd` classes are also **not** in the
+  base constrain list, so the broker's session sockets and inherited fds
+  keep working across categories. **Exception (decision #48):** the
+  `x/` subdir of the instance dir (the X socket + MIT auth file) is
+  explicitly relabelled by the `xwayland` satellite to the instance's
+  `cN` (`apse_xsocket_t:s0:cN`). Because the `default_range` rule copies
+  the *parent's* low level, the X socket and auth file created inside it
+  inherit `cN` for free. This makes the MIT auth file (which grants
+  X11 authentication) per-instance: a `cM` subject cannot read a `cN`
+  object (`cM` and `cN` are incomparable). The `xserver_t` process
+  itself also runs at `cN` (typetransition from the satellite's `cN`
+  range), so the X server can read its own auth file. The satellite
+  self-heals on restart: if the dir is at the wrong level (e.g. after a
+  `restorecon`), it relabels it back to `cN` via `setxattr`. `filecon`
+  pins only the *type* (`apse_xsocket_t`); the runtime level is not
+  expressible in a static filecon.
 
 Mechanics (`src/mcs.rs`):
 

@@ -82,7 +82,10 @@
 //! `xserver_t → user_tmp_t` base→base rules the old layout forced.
 //! [`ensure_xdir`] removes and recreates a stale `x/` a
 //! pre-filetrans satellite left behind (the mixed-version upgrade
-//! window), liveness-probed, so a live X socket is never disturbed.
+//! window), liveness-probed, so a live X socket is never
+//! disturbed, and — in confined mode — relabels the dir to the
+//! instance's MCS category (decision #48), so the MIT auth file
+//! Xwayland creates beneath it is a per-instance `cN` file.
 //!
 //! [`Xwayland`]: https://www.x.org/archive/commission/xace/docs/xwayland/
 
@@ -682,31 +685,33 @@ pub fn run(cfg: Config) -> Result<()> {
 
 /// Ensure the `x/` subdir (the X socket + MIT auth file's home,
 /// decision #47) exists and — in confined mode — carries the
-/// module's `apse_xsocket_t` label. A fresh dir gets the label at
-/// *birth* (the module's named filetrans: a dir named `x` that
-/// `apse_t` creates under the `user_tmp_t` instance dir), so the
-/// common path is just create + chmod. The one case where birth
-/// does not help: a stale dir left by a satellite that ran
-/// *before* the filetrans was installed (the mixed-version upgrade
-/// window — new binary, old module). That dir is
-/// `user_tmp_t`-labeled and the filetrans will never see it, so we
-/// remove and recreate (the fresh inode takes the filetrans
-/// label). Deliberately remove+recreate rather than a setxattr
-/// relabel: a relabel would need `relabelto` on `apse_xsocket_t`,
-/// which the module does not ask for, while a remove+recreate
-/// needs only the grants `apse_t` already holds on `user_tmp_t`
-/// (LESSONS #86). Under the *old* module the recreate simply
-/// yields another `user_tmp_t` dir (harmless: that module's
-/// grants cover it); once the module is upgraded, the next
-/// non-live start self-heals it for good. A dir a *live* X socket
-/// serves is never touched (decision #40: the liveness probe) —
-/// its label is consistent with the module the serving satellite
-/// ran under, and unlinking its socket would break that server.
+/// module's `apse_xsocket_t` label at the instance's MCS category
+/// (decision #48). A fresh dir gets the *type* at birth (the
+/// module's named filetrans: a dir named `x` that `apse_t`
+/// creates under the `user_tmp_t` instance dir) but the
+/// parent's low level (`s0`), so the common path is create +
+/// chmod + the decision-#48 level relabel — a *level* is not
+/// recoverable by remove+recreate (the fresh dir is born `s0`
+/// again), only a setxattr is. The one case where birth does not
+/// help the *type*: a stale dir left by a satellite that ran
+/// *before* the filetrans was installed (the mixed-version
+/// upgrade window — new binary, old module). That dir is
+/// `user_tmp_t`-labeled and the filetrans will never see it, so
+/// we remove and recreate (the fresh inode takes the filetrans
+/// label; a remove+recreate needs only the grants `apse_t`
+/// already holds on `user_tmp_t`, LESSONS #86). Under the *old*
+/// module the follow-on level relabel is denied and we warn and
+/// continue at `s0` (the historical baseline). A dir a *live* X
+/// socket serves is never touched (decision #40: the liveness
+/// probe) — its label is consistent with the module the serving
+/// satellite ran under, and unlinking its socket would break
+/// that server.
 fn ensure_xdir(xdir: &str, cfg: &Config) -> Result<()> {
-    if std::path::Path::new(xdir).exists()
+    let path = std::path::Path::new(xdir);
+    if path.exists()
         && crate::mcs::is_confined()
-        && let Some(want) = xsocket_context()
-        && let Some(cur) = crate::pdeathsig::current_label(std::path::Path::new(xdir))
+        && let Some(want) = xsocket_context(cfg)
+        && let Some(cur) = crate::pdeathsig::current_label(path)
         && cur != want
     {
         match std::os::unix::net::UnixStream::connect(listen_socket_path(cfg)) {
@@ -716,7 +721,8 @@ fn ensure_xdir(xdir: &str, cfg: &Config) -> Result<()> {
                 warn!(
                     "xwayland: the {xdir} dir is labeled {cur} (expected {want}) \
                      but serves a live X socket; leaving it in place — \
-                     install the module with apse_xsocket_t and restart"
+                     restart the satellite (the dir is relabeled on a \
+                     non-live start)"
                 );
                 return Ok(());
             }
@@ -724,7 +730,7 @@ fn ensure_xdir(xdir: &str, cfg: &Config) -> Result<()> {
                 // Stale or absent socket: safe to remove+recreate.
                 info!(
                     "xwayland: removing stale {xdir} dir (labeled {cur}, \
-                     expected {want}); recreating so the filetrans labels it"
+                     expected {want}); recreating it"
                 );
                 let _ = std::fs::remove_dir_all(xdir);
             }
@@ -733,21 +739,72 @@ fn ensure_xdir(xdir: &str, cfg: &Config) -> Result<()> {
     std::fs::create_dir_all(xdir)
         .with_context(|| format!("creating the x/ socket dir {xdir:?}"))?;
     let _ = std::fs::set_permissions(xdir, std::fs::Permissions::from_mode(0o700));
+    relabel_xdir(path, xdir, cfg);
     Ok(())
 }
 
+/// Decision #48: relabel the `x/` dir from the parent's low level
+/// (`s0`) to the instance's MCS category (confined mode only,
+/// best-effort). The MIT auth file Xwayland creates beneath it
+/// inherits the dir's level (the target-low path: no filetrans of
+/// its own, so the level is the parent's low — for a single-level
+/// parent, its own level), so the cookie becomes a `cN` file —
+/// readable by the same `cN`, by `s0` and full-range subjects, and
+/// by no other instance's `cM` (the stock
+/// `mlsconstrain file { read … } ( h1 dom h2 )` binds the
+/// `mcs_constrained` apse types; a different category is
+/// incomparable). A failed relabel (the mixed-version window: new
+/// binary, old module without the `relabelto` grant) only warns —
+/// the degradation is the status quo (`s0`).
+fn relabel_xdir(path: &std::path::Path, xdir: &str, cfg: &Config) {
+    if !crate::mcs::is_confined() {
+        return;
+    }
+    let want = match xsocket_context(cfg) {
+        Some(w) => w,
+        None => return, // no readable current context; nothing to do
+    };
+    if crate::pdeathsig::current_label(path).as_deref() == Some(want.as_str()) {
+        return;
+    }
+    if let Err(e) = crate::pdeathsig::set_label(path, &want) {
+        warn!(
+            "xwayland: could not relabel the {xdir} dir to {want} ({e}); \
+             the dir (and the MIT auth file beneath it) stay at the \
+             parent's low level `s0`, readable by every instance's \
+             apse family — the status quo (install the module version \
+             with the apse_xsocket_t relabel grants and restart)"
+        );
+    }
+}
+
 /// The SELinux context the `x/` dir must carry in confined mode:
-/// the module's `apse_xsocket_t` at level `s0` (created objects
-/// take the parent's low level; `s0` is dominated by every `s0:cN`),
-/// under the current user (the dir's user is its parent's).
-fn xsocket_context() -> Option<String> {
+/// the module's `apse_xsocket_t` at the instance's MCS category
+/// (`s0:cN`, decision #48) under the current user (the dir's user
+/// is its parent's). The category is computed from the same
+/// (app-id, instance-id) the satellite narrowed to before
+/// creating anything, so it is this process's own level.
+fn xsocket_context(cfg: &Config) -> Option<String> {
     let user = std::fs::read_to_string("/proc/self/attr/current")
         .ok()?
         .split(':')
         .next()?
         .trim()
         .to_string();
-    Some(format!("{user}:object_r:apse_xsocket_t:s0"))
+    Some(format!(
+        "{user}:object_r:apse_xsocket_t:{}",
+        xsocket_level(cfg)
+    ))
+}
+
+/// The level the `x/` dir (and, through the target-low
+/// inheritance, the MIT auth file beneath it) must carry in
+/// confined mode: the instance's MCS category (decision #48).
+fn xsocket_level(cfg: &Config) -> String {
+    format!(
+        "s0:c{}",
+        crate::mcs::instance_category(&cfg.app_id, &cfg.instance_id)
+    )
 }
 
 /// Read `fd` until EOF (or 256 bytes, whatever comes first).
@@ -839,6 +896,23 @@ mod tests {
         assert_eq!(
             auth_path(&cfg),
             format!("{}/x/xwayland-auth", host_instance_dir("firefox", "1"))
+        );
+    }
+
+    #[test]
+    fn xsocket_level_is_the_instance_category() {
+        // Decision #48: the `x/` dir (and, through the target-low
+        // inheritance, the MIT auth file beneath it) carries the
+        // instance's MCS category — the same (app-id, instance-id)
+        // hash the satellite narrowed to before creating anything.
+        let cfg = Config {
+            app_id: "firefox".into(),
+            instance_id: "1".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            xsocket_level(&cfg),
+            format!("s0:c{}", crate::mcs::instance_category("firefox", "1"))
         );
     }
 

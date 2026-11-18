@@ -84,11 +84,25 @@
 ; inode, and the socket object keeps that SID for its life, so
 ; the socket-file and every socket-class check on it land on
 ; `apse_t`, not here (LESSONS #86). The auth file stays here
-; (Xwayland creates it under this dir). The range is the
-; parent's low (`s0`); the filecon at the bottom of the file
-; keeps `matchpathcon`/`restorecon` from dragging the subdir
-; back to `user_tmp_t` (the userdomain module's
-; `/run/user/[^/]+` catch-all).
+; (Xwayland creates it under this dir) and takes this dir's
+; label — the auth file has *no* filetrans of its own, so its
+; type falls back to the parent's and its level to the
+; parent's low (`mls_compute_sid`'s `default_range … target
+; low` copy; both a no-op into a single-level parent's own
+; level). The satellite relabels the dir from the parent's
+; low (`s0`) to the instance's MCS category right after
+; creation (decision #48, the `relabelto`/`relabelfrom`
+; grants below), so the auth file is born at that category:
+; a `cN` file readable by the same `cN` (the stock
+; `mlsconstrain file { read … } ( h1 dom h2 )` binds the
+; `mcs_constrained` apse types; a different instance's `cM`
+; is incomparable and denied) while `s0` and full-range
+; subjects still read it. The filecon at the bottom of the
+; file pins only the *type* — `matchpathcon`/`restorecon`
+; cannot express a per-instance level — so a `restorecon -R`
+; degrades the level back to `s0` (fail-open to the
+; historical baseline) and the satellite self-heals it on
+; the next start.
 (type apse_xsocket_t)
 (roletype object_r apse_xsocket_t)
 (typeattributeset cil_gen_require file_type)
@@ -373,13 +387,21 @@
 ; creates the `x/` subdir in the instance dir; see the
 ; `apse_xsocket_t` type comment). Same five-field named
 ; filetrans as the `apse` dir above: the subdir is born
-; `apse_xsocket_t` and its children (the MIT auth file
-; Xwayland creates during startup) inherit the label. A *stale*
-; `x/` dir a pre-filetrans satellite left behind (the
+; `apse_xsocket_t` at the parent's low level (`s0`); the
+; satellite then relabels it to the instance's MCS category
+; (decision #48 — a setxattr the module's
+; `relabelto`/`relabelfrom` grants cover; a *level* is not
+; recoverable by remove+recreate, the fresh dir is born `s0`
+; again). Its children (the MIT auth file Xwayland creates
+; during startup) take the dir's type and level (the type-
+; fallback and target-low paths — see the type comment). A
+; *stale* `x/` dir a pre-filetrans satellite left behind (the
 ; mixed-version upgrade window: new binary, old module) is
-; removed and recreated by the satellite — a remove+recreate
-; needs only the grants `apse_t` already has on `user_tmp_t`,
-; while a setxattr relabel would need `relabelto` (LESSONS #86)
+; still removed and recreated — that heals the *type* (a
+; remove+recreate needs only the grants `apse_t` already has
+; on `user_tmp_t`; LESSONS #86), while under the old module
+; the follow-on level relabel is denied and the satellite
+; warns and continues at `s0`.
 (typetransition apse_t user_tmp_t dir "x" apse_xsocket_t)
 (allow apse_app_t bin_t (process (noatsecure rlimitinh siginh)))
 (allow apse_app_t shell_exec_t (process (noatsecure rlimitinh siginh)))
@@ -700,16 +722,39 @@
 ; it (the socket file ends up `apse_t` via the kernel's graft
 ; on bind — the socket object's SID — so the socket's own
 ; permissions are the `apse_t` self-grants, not these), and
-; removes it in the mixed-version upgrade window. `add_name`
-; covers the socket-file dentry; `remove_name` the stale-
-; socket unlink; `rmdir` the remove+recreate and teardown. The
+; removes it in the mixed-version upgrade window. `create`
+; covers the `dir:create` check that fires when the `x/` dir
+; itself is created (the new inode's label is this type —
+; first creation, or the remove+recreate path); `write`
+; covers the VFS-level `inode_permission(dir, MAY_WRITE)`
+; that `bind()` runs on the parent before creating the
+; socket file (`unix_bind_bsd` → `filename_create` on a
+; 7.3 kernel); `add_name` covers the socket-file dentry.
+; Binding the X socket also runs `may_create` on the new
+; socket file: its label is *this* type (type fallback to
+; the parent — the `xwayland.sock → apse_t` filetrans above
+; matches a `user_tmp_t` parent, not this one), so the
+; `sock_file:create` grant below (and the `associate` from
+; this type to the containing superblock, next) must exist;
+; the kernel's graft on bind then relabels the file to the
+; socket object's SID (`apse_t` — so the socket's own
+; permissions are the `apse_t` self-grants, not these).
+; `remove_name` covers the stale-socket unlink; `rmdir` the
+; remove+recreate and teardown. The
 ; `associate` is checked on the *new label's* SID against the
 ; containing superblock (`may_create`, `selinux_inode_create`):
 ; the `/run/user/<uid>` tmpfs carries `tmpfs_t` (`unlabeled_t`
 ; for a seclabel-only one) — the same pair as `apse_shim_t`.
-(allow apse_t apse_xsocket_t (dir (add_name getattr open read search setattr remove_name rmdir)))
-(allow apse_t apse_xsocket_t (file (getattr open read unlink)))
-(allow apse_t apse_xsocket_t (sock_file (getattr open read unlink)))
+; `relabelto`/`relabelfrom` cover the decision-#48 level
+; relabel (setxattr `s0` → the instance's `cN`): a
+; *level-only* change, so both implicit checks land on this
+; type (the old and the new label share it); the stock
+; mlsconstrain passes for the narrowed satellite (`cN`
+; dominates `s0` on the `relabelfrom` leg and itself on the
+; `relabelto` leg, both single-level).
+(allow apse_t apse_xsocket_t (dir (add_name create getattr open read search setattr write remove_name rmdir relabelto relabelfrom)))
+(allow apse_t apse_xsocket_t (file (getattr open read setattr unlink)))
+(allow apse_t apse_xsocket_t (sock_file (create getattr open read setattr unlink)))
 (allow apse_xsocket_t tmpfs_t (filesystem (associate)))
 (allow apse_xsocket_t unlabeled_t (filesystem (associate)))
 (allow apse_t user_tmp_t (unix_stream_socket (accept bind connectto create getattr read write getopt setopt)))
@@ -1426,14 +1471,19 @@
 ; module→*base* and is gone. Traversal into `x/` (the instance
 ; dir and its ancestors are `user_tmp_t`) needs no module grant:
 ; the base policy gives `xserver_t` dir search/add_name on
-; `user_tmp_t` via `userdom_filetrans_type`. The X socket itself
+; `user_tmp_t` via `userdom_filetrans_type`; the dir grant below
+; adds `write` for the VFS-level `MAY_WRITE` check a 7.3
+; `open(O_CREAT)` runs on the parent before creating the auth
+; file (`dentry_create` → `may_o_create` →
+; `inode_permission(dir, MAY_WRITE|MAY_EXEC)`, the `MAY_EXEC`
+; leg mapping to the `search` already granted). The X socket itself
 ; is *not* `apse_xsocket_t`: on bind the kernel's graft copies
 ; the socket object's SID (the creator's, `apse_t`) onto the
 ; bound inode and the socket object keeps it — so the socket's
 ; file- and socket-class checks land on `apse_t` (the `apse_t`
 ; rules above; `xserver_t` never opens the socket by path, it
 ; holds the handed-over fd — `fd:use`).
-(allow xserver_t apse_xsocket_t (dir (add_name getattr search)))
+(allow xserver_t apse_xsocket_t (dir (add_name getattr search write)))
 (allow xserver_t apse_xsocket_t (file (append create getattr open read write)))
 ; decision #37: the Xwayland satellite's own shim (the same
 ; mechanism, `SIGTERM`): its `xserver_t` transition changes the SID
@@ -1492,6 +1542,14 @@
 ; only the userdomain module's `/run/user/[^/]+` →
 ; `user_tmp_t` for the subdir and its contents, and a
 ; `restorecon -R` would drag the auth file off `apse_xsocket_t`.
+; The `((s0) (s0))` level is the *static* baseline only: the
+; runtime level is the instance's MCS category (decision #48,
+; the satellite's relabel), which no filecon can express — a
+; `restorecon -R` therefore degrades the dir and the auth file
+; back to `s0` (fail-open: `s0` is the historical baseline,
+; dominated by every category), and the satellite's
+; `ensure_xdir` self-heals the level on the next non-live
+; start.
 ; `%{USERID}` is the 3.11 template keyword the store expands
 ; per user (the dbus/gnome modules use it for their own
 ; `/run/user` entries); `system_u` is the same convention they

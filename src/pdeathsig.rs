@@ -261,6 +261,43 @@ pub(crate) fn current_label(so: &std::path::Path) -> Option<String> {
     })
 }
 
+/// Set a path's `security.selinux` xattr to the exact context
+/// `want` — the 7.2 setxattr relabel path
+/// (`selinux_inode_setxattr`): `relabelto` (subject → the new
+/// label), `relabelfrom` (subject → the old one), and
+/// `filesystem:associate` (the new SID → the mount's SID), all
+/// checked against the caller, so the caller needs the module's
+/// grants for the *pair* of labels. The kernel NUL-terminates
+/// the value itself (`kmemdup_nul`), so the exact length is
+/// passed for it; the *path* is read as a C string, so it must
+/// be a `CString` (a raw Rust byte buffer is not guaranteed to
+/// carry a NUL at `len` — on a reused allocator block the
+/// kernel walks into the stale tail and the call fails `ENOENT`
+/// on a mangled path, while every Rust-level log of the path
+/// looks correct; LESSONS #43).
+pub(crate) fn set_label(path: &std::path::Path, want: &str) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "NUL byte in path"))?;
+    // SAFETY: `path` is a valid NUL-terminated C string; `want`
+    // is a valid byte sequence of length `want.len()` (the
+    // kernel appends the NUL).
+    let r = unsafe {
+        libc::setxattr(
+            path.as_ptr(),
+            c"security.selinux".as_ptr(),
+            want.as_bytes().as_ptr() as *const libc::c_void,
+            want.len(),
+            0,
+        )
+    };
+    if r != 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 /// Set the shim's SELinux label to the module's `apse_shim_t`
 /// (confined mode only) when it does not already carry it. A
 /// failed relabel only warns — the degradation is the documented
@@ -277,45 +314,7 @@ fn relabel_if_needed(so: &std::path::Path) {
     if current_label(so).as_deref() == Some(want.as_str()) {
         return;
     }
-    // The 7.2 setxattr relabel path (selinux_inode_setxattr):
-    // `file:relabelfrom` (subject → the old label),
-    // `file:relabelto` (subject → this one), and
-    // `filesystem:associate` (this SID → the mount's SID) — all
-    // granted by the module. The kernel NUL-terminates the value
-    // itself (`kmemdup_nul`), so the exact length is passed for
-    // it; the *path* is read as a C string, so it must be a
-    // `CString` (a raw `String` buffer's byte at `len` is not a
-    // guaranteed NUL — on a reused allocator block the kernel
-    // walks into the stale tail and the call fails `ENOENT` on
-    // a mangled path, while every Rust-level log of the path
-    // looks correct; LESSONS #43).
-    use std::os::unix::ffi::OsStrExt;
-    let path = match std::ffi::CString::new(so.as_os_str().as_bytes()) {
-        Ok(p) => p,
-        Err(_) => {
-            eprintln!(
-                "apse: warning: could not label the pdeathsig-restore shim {so:?} \
-                 (non-UTF-8 path); a confined consumer cannot map it \
-                 (`file:execute` is granted only on apse_shim_t) — a \
-                 SIGKILL'd supervisor would leave its child behind"
-            );
-            return;
-        }
-    };
-    // SAFETY: `path` is a valid NUL-terminated C string; `want`
-    // is a valid byte sequence of length `want.len()` (the
-    // kernel appends the NUL).
-    let r = unsafe {
-        libc::setxattr(
-            path.as_ptr(),
-            c"security.selinux".as_ptr(),
-            want.as_bytes().as_ptr() as *const libc::c_void,
-            want.len(),
-            0,
-        )
-    };
-    if r != 0 {
-        let e = std::io::Error::last_os_error();
+    if let Err(e) = set_label(so, &want) {
         eprintln!(
             "apse: warning: could not label the pdeathsig-restore shim {so:?} \
              as {want:?} ({e}); a confined consumer cannot map it \
