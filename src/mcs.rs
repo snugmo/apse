@@ -203,9 +203,13 @@ pub fn self_reexec_to_s0() -> Result<()> {
 
 /// Task 8.6: the type the **stock** (unrelabeled) binary takes —
 /// `selinux/README.md`, "Operating modes": unconfined mode runs
-/// the whole stack `unconfined_t`. A box whose stock filecon gives
-/// the binary a different type must pin the exact context and
-/// update this constant (the task-8.6 verify does).
+/// the whole stack `unconfined_t`. This is the *process* type, not
+/// the file type: pinned on the target box (2026-11-18), whose
+/// stock *file* label for the binary is `usr_t` (the `/usr`
+/// catch-all), yet the stock *process* context after the exec is
+/// `unconfined_t` (no transition from `unconfined_t` on `usr_t`) —
+/// verified byte-identical to a never-relabeled run. A box whose
+/// stock *process* context differs must update this constant.
 const STOCK_TYPE: &str = "unconfined_t";
 
 /// Task 8.6 (`--no-selinux` / `APSE_NO_SELINUX`): run *this

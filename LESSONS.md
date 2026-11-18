@@ -1053,3 +1053,21 @@ write-up.
     carries *two* nix versions (0.32 for apse, 0.31.x for nono's linux
     target dep) — expected, not a conflict. — *nix 0.32.0 changelog
     (`user` feature gate, `accept` → `OwnedFd`).*
+
+88. **An exec that changes the SID checks `noatsecure`, `rlimitinh`
+    and `siginh` — not just `transition`/`entrypoint` (7.2.15).**
+    Writing an *explicit* exec context skips the `type_transition`
+    table (the kernel takes the pending `exec_sid` as the new SID
+    directly), and that was all the first 8.6 module rule granted —
+    but the new-SID branch of the exec check does further
+    `avc_has_perm` calls: `noatsecure` (a denial flips the exec into
+    secure mode) and `rlimitinh`/`siginh` (the inherited rlimit and
+    signal state). Reading the source found the visible `noatsecure`
+    check only; the audit trail of the first `--no-selinux` run
+    (2026-11-18, all three denied, non-fatal) is what enumerated the
+    set. The MCS self-narrowing re-exec already carries the trio via
+    the `apse_t` self-grant — when a new SID-changing exec path is
+    added to the module, grant it there too; when in doubt, trust
+    `ausearch -m avc` over a source reading. — *the first
+    `--no-selinux` run's audit trail (enforcing, 7.2.15),
+    `security/selinux/hooks.c`.*
