@@ -403,7 +403,9 @@ it before non-trivial changes (the full write-ups live in
   is still in development; Fedora 45's 262.1 has no user-bus varlink
   socket), 6.5.8 (the per-instance paste-arm hotkey — a host-side
   one-shot pre-authorization of one paste into one instance, design in
-  PLAN.md), and the AppArmor second layer (`docs/apparmor.md`; the
+  PLAN.md), 6.5.9 (the per-instance copy-out gate — hold-and-release of
+  the app's selection *publication*, the opposite direction of 6.5.8),
+  and the AppArmor second layer (`docs/apparmor.md`; the
   `change_profile`-clears-`PR_SET_PDEATHSIG` question is in §2.2).
 
 ## Commit conventions
