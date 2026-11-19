@@ -1082,3 +1082,16 @@ write-up.
     grammar changes, grep the tree — notification bodies included —
     for embedded invocations. — *the 7.1 rename's leftover
     (2026-11-18); the same class as #49 (baked header lettering).*
+
+90. **The i3-IPC dialect is version-dependent, and a socket's `/proc/<pid>/fd/<n>` file cannot be opened.**
+    Classic i3's framing (4-byte magic `0x5043490a`, 12-byte header, `GET_TREE` = 2, socket
+    `sway-ipc-<uid>-<pid>.sock`) is *rejected with a connection reset* by sway 1.12, which speaks a
+    6-byte `i3-ipc` magic and a 14-byte header with `GET_TREE` = 4 and names its socket
+    `sway-ipc.<uid>.<pid>.sock` — detect the dialect by the response magic instead of assuming it.
+    Related: on this kernel (7.2.x) `open(2)` of `/proc/<pid>/fd/<n>` for a *socket* fd fails with
+    ENXIO even same-uid, so no correlation may be built on borrowing a process's fd to
+    `getpeername()` — readlink the fd and match the socket's inode against `/proc/net/unix`
+    (the *bound* side carries its path there); `ss -xp` is the eyeball verification tool.
+    Both facts shape `--focus` resolution (PLAN 6.5.8/6.5.9): the window's *pid* — never its
+    `app_id`, which is the app's self-reported identity — is the identity anchor.
+    — *found checking two live `foot` instances for the paste-arm/copy-out plan items (2026-11-19).*
