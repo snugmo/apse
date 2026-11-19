@@ -201,6 +201,12 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
     // fork, so A can bind it into the fresh `/run` (it is also the
     // home of the tagged Wayland socket).
     let runtime_dir = mounts::instance_runtime_dir(config);
+    // Whether the dir already existed *before this run* (decision
+    // #49): a pre-fork failure may clean up only a dir this run
+    // created — a pre-existing one is owned by a live run or
+    // sidecar of the same instance, whose files a cleanup here
+    // would destroy.
+    let runtime_dir_preexisting = std::path::Path::new(&runtime_dir).exists();
     std::fs::create_dir_all(&runtime_dir)
         .with_context(|| format!("creating the per-instance runtime dir {runtime_dir}"))?;
     // The per-app private state tree on the host (decision #43):
@@ -257,11 +263,26 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
             Ok(t) => t,
             Err(e) => {
                 // No fork happened, so this run leaves nothing that
-                // outlives the process — but the dir may hold a live
-                // sidecar's socket (a relay sharing the instance dir),
-                // which a blind `remove_dir_all` would destroy
-                // (decision #40).
-                remove_runtime_dir(&runtime_dir, None);
+                // outlives the process — except what it created in
+                // the instance dir itself. But the dir may be
+                // *owned by a live process*: the "served by a live
+                // process" reject means a duplicate run (or a
+                // sidecar sharing the instance dir) is alive and
+                // the dir is theirs — sweeping it would destroy
+                // their files (the live run's shim, its `etc/`
+                // carry): the 2026-11-19 duplicate-run incident
+                // (decision #49). Cleanup therefore runs only when
+                // this run created the dir (everything in it is
+                // then ours — the tagged socket file was already
+                // unlinked by the preparation's `inspect_err`);
+                // the form is non-destroying (our own named files,
+                // `rmdir`), so even the one race — a sidecar
+                // creating the same dir concurrently — cannot lose
+                // anything (its files stay, the `rmdir` just
+                // fails).
+                if !runtime_dir_preexisting {
+                    remove_owned_runtime_dir(&runtime_dir, shim.as_deref(), spec.listen.as_deref());
+                }
                 return Err(e).context("creating the tagged Wayland socket");
             }
         };
@@ -999,6 +1020,58 @@ fn remove_runtime_dir(dir: &str, own_tagged: Option<&str>) {
     }
 }
 
+/// Best-effort removal of an instance runtime dir **this run
+/// created** — the pre-fork failure path (decision #49). Removes
+/// only what this run can have put in it: its pdeathsig-restore
+/// shim files (built by `ensure_shim` before the fork) and the
+/// `--listen`'s intermediate subdirectories (a `listen` with a
+/// directory component; the socket file itself was already
+/// unlinked by the preparation's `inspect_err`) — then `rmdir`s
+/// the dir itself.
+///
+/// It never sweeps shared state: it is called only when the dir
+/// did not exist before this run, so nothing in it belongs to a
+/// live run or sidecar. The non-destroying form covers the one
+/// race — a sidecar that creates the *same* instance dir in the
+/// same interval: its files (a signal-suffixed shim of its own,
+/// its live socket) are untouched by our by-name removals, the
+/// intermediate-dir `rmdir` fails `ENOTEMPTY`, and the dir
+/// survives (logged) until a later run's lazy teardown.
+fn remove_owned_runtime_dir(dir: &str, shim: Option<&std::path::Path>, listen: Option<&str>) {
+    if let Some(so) = shim {
+        // The `.so` and its source (same stem, `.c` extension).
+        let _ = std::fs::remove_file(so);
+        let _ = std::fs::remove_file(so.with_extension("c"));
+    }
+    // The `listen`'s intermediate dirs between the instance dir
+    // and the socket path. An absolute `listen` resolves outside
+    // the instance dir: none of its parents are ever touched.
+    if let Some(l) = listen {
+        let path = crate::wayland::resolve_socket_path(dir, Some(l));
+        let rt = std::path::Path::new(dir);
+        let mut cursor = std::path::Path::new(&path).parent();
+        while let Some(parent) = cursor {
+            if parent == rt || !parent.starts_with(rt) {
+                break;
+            }
+            let _ = std::fs::remove_dir(parent);
+            cursor = parent.parent();
+        }
+    }
+    match std::fs::remove_dir(dir) {
+        Ok(()) => debug!("runtime dir removed (this run created it): {dir:?}"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+            info!(
+                "instance dir {dir:?} kept: a sidecar sharing it arrived \
+                 concurrently (its files remain); a later run's teardown \
+                 will clean it up"
+            );
+        }
+        Err(e) => warn!("cleaning up the runtime dir {dir:?} failed: {e}"),
+    }
+}
+
 /// One level of [`remove_runtime_dir`]: remove every entry of `dir`
 /// except a socket file a live process serves (and is not
 /// `own_tagged`); recurse into subdirectories.
@@ -1431,7 +1504,7 @@ fn exec_app(command: &[OsString], env: &std::collections::BTreeMap<String, Strin
 mod tests {
     use super::{
         A_S_GONE, SandboxConfig, WaylandSpec, a_pdeath_check, a_s_gone_handler, a_tear_down,
-        remove_runtime_dir, run_sandboxed, waitpid_retry,
+        remove_owned_runtime_dir, remove_runtime_dir, run_sandboxed, waitpid_retry,
     };
     use crate::sandbox::mounts;
     use crate::sandbox::namespaces::NetworkMode;
@@ -1538,6 +1611,89 @@ mod tests {
     fn runtime_dir_cleanup_missing_dir_is_a_noop() {
         let dir = crate::testutil::TmpDir::new("runtime-cleanup-missing");
         remove_runtime_dir(dir.path().join("nope").to_str().unwrap(), None);
+    }
+
+    // Decision #49: the pre-fork failure path cleans up only a dir
+    // this run created, and only its own artifacts (non-destroying).
+
+    #[test]
+    fn owned_runtime_dir_cleanup_removes_the_run_own_artifacts() {
+        let tmp = crate::testutil::TmpDir::new("runtime-owned");
+        let inst = tmp.path().join("inst");
+        std::fs::create_dir(&inst).unwrap();
+        // This run's shim (the confined-mode artifact of the
+        // pre-fork preparation).
+        let so = inst.join("pdeathsig-restore-10.so");
+        std::fs::write(&so, "x").unwrap();
+        std::fs::write(inst.join("pdeathsig-restore-10.c"), "x").unwrap();
+        // A `listen` with a directory component: the intermediate
+        // dir (the socket file itself is already unlinked by the
+        // preparation's `inspect_err`).
+        let sub = inst.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+
+        remove_owned_runtime_dir(inst.to_str().unwrap(), Some(so.as_path()), Some("sub/wl-x"));
+
+        assert!(!so.exists(), "the run's shim .so must go");
+        assert!(
+            !inst.join("pdeathsig-restore-10.c").exists(),
+            "the run's shim source must go"
+        );
+        assert!(!sub.exists(), "the empty intermediate dir must go");
+        assert!(!inst.exists(), "the now-empty dir itself must go");
+    }
+
+    #[test]
+    fn owned_runtime_dir_cleanup_spares_a_concurrent_sidecar() {
+        let tmp = crate::testutil::TmpDir::new("runtime-owned-race");
+        let inst = tmp.path().join("inst");
+        std::fs::create_dir(&inst).unwrap();
+        // This run's shim, and (the race) a sidecar that created
+        // the same dir concurrently: a live socket plus its own
+        // signal-suffixed shim.
+        let so = inst.join("pdeathsig-restore-10.so");
+        std::fs::write(&so, "x").unwrap();
+        let live = inst.join("wayland-1");
+        let live_l = UnixListener::bind(&live).unwrap();
+        std::fs::write(inst.join("pdeathsig-restore-15.so"), "y").unwrap();
+
+        remove_owned_runtime_dir(inst.to_str().unwrap(), Some(so.as_path()), None);
+
+        assert!(!so.exists(), "the run's own shim is removed");
+        assert!(live.exists(), "a racing sidecar's live socket must survive");
+        UnixStream::connect(&live)
+            .unwrap_or_else(|e| panic!("the kept socket must still serve: {e}"));
+        assert!(
+            inst.join("pdeathsig-restore-15.so").exists(),
+            "a racing sidecar's shim (a different name) must survive"
+        );
+        assert!(inst.exists(), "the dir must survive while its files remain");
+        drop(live_l);
+    }
+
+    #[test]
+    fn owned_runtime_dir_cleanup_absolute_listen_outside_is_untouched() {
+        let tmp = crate::testutil::TmpDir::new("runtime-owned-abs");
+        let inst = tmp.path().join("inst");
+        std::fs::create_dir(&inst).unwrap();
+        // An absolute `listen` outside the instance dir: a file in
+        // its own tree, which must not be removed (the loop breaks
+        // at the first parent that is not under the instance dir).
+        let outside = tmp.path().join("elsewhere");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("wl-abs"), "x").unwrap();
+
+        remove_owned_runtime_dir(
+            inst.to_str().unwrap(),
+            None,
+            Some(outside.join("wl-abs").to_str().unwrap()),
+        );
+
+        assert!(
+            outside.join("wl-abs").exists(),
+            "a file outside the instance dir must survive"
+        );
+        assert!(!inst.exists(), "the empty instance dir itself must go");
     }
 
     fn tagged_config() -> SandboxConfig {
