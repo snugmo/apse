@@ -401,7 +401,9 @@ it before non-trivial changes (the full write-ups live in
   LESSONS #45-#46). Parked: 6.4 (the varlink tier, until a released
   systemd ships `PIDs` in `StartTransient` — re-checked 2026-11-04: v263
   is still in development; Fedora 45's 262.1 has no user-bus varlink
-  socket) and the AppArmor second layer (`docs/apparmor.md`; the
+  socket), 6.5.8 (the per-instance paste-arm hotkey — a host-side
+  one-shot pre-authorization of one paste into one instance, design in
+  PLAN.md), and the AppArmor second layer (`docs/apparmor.md`; the
   `change_profile`-clears-`PR_SET_PDEATHSIG` question is in §2.2).
 
 ## Commit conventions
