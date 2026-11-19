@@ -468,13 +468,53 @@ pub(crate) fn etc_hosts_content(hostname: &str) -> String {
 /// guarantee is the two floors, both of which grant no write
 /// (the Landlock file grants are `Read`; in confined mode the
 /// module's `apse_etc_t` rule is read-only).
+/// Write one /etc file, self-healing a pre-existing version this
+/// process cannot write (decision #52).
+///
+/// The module's named filetrans labels these files by their *name*
+/// in the *creator's* mode (`apse_t` → `apse_etc_t`, unconfined
+/// → the parent's `user_tmp_t`); the label sticks to the inode
+/// across modes. A confined run (the relabeled installed binary)
+/// leaves the files `apse_etc_t`; a later run against the same
+/// instance in unconfined mode (a dev build, the test suite) then
+/// opens them as `unconfined_t`, which the module grants only
+/// `getattr`/`unlink` on `apse_etc_t` (the deliberate "an
+/// unconfined run may clean confined residue" grant — no `write`),
+/// so the truncate fails with EACCES and the whole run dies in
+/// setup (the 2026-11-19 `the_rootfs_matches_the_reference`
+/// failure: the file was written by a live confined instance, the
+/// unconfined test run could not rewrite it). Recreating the file
+/// is always safe: a fresh inode takes the filetrans result for
+/// whichever mode creates it, and a concurrent reader (the
+/// sandbox binds the file by inode at step 7.5) keeps the old
+/// inode regardless.
+fn write_etc_file(path: &str, content: &str) -> Result<()> {
+    match std::fs::write(path, content) {
+        Ok(()) => Ok(()),
+        Err(e)
+            if e.kind() == std::io::ErrorKind::PermissionDenied
+                && std::path::Path::new(path).exists() =>
+        {
+            match std::fs::remove_file(path) {
+                Ok(()) => std::fs::write(path, content).with_context(|| {
+                    format!("writing {path} (after removing the previous version)")
+                }),
+                Err(rm) => Err(anyhow::anyhow!(
+                    "writing {path} was denied ({e}) and the pre-existing \
+                     version could not be removed ({rm}); remove it manually \
+                     (a previous run in the other confinement mode left it)"
+                )),
+            }
+        }
+        Err(e) => Err(e).with_context(|| format!("writing {path}")),
+    }
+}
+
 fn write_etc_files(base: &str, hostname: &str) -> Result<()> {
     let etc = format!("{base}/etc");
     std::fs::create_dir_all(&etc).with_context(|| format!("creating {etc}"))?;
-    std::fs::write(format!("{etc}/hosts"), etc_hosts_content(hostname))
-        .with_context(|| format!("writing {etc}/hosts"))?;
-    std::fs::write(format!("{etc}/hostname"), format!("{hostname}\n"))
-        .with_context(|| format!("writing {etc}/hostname"))?;
+    write_etc_file(&format!("{etc}/hosts"), &etc_hosts_content(hostname))?;
+    write_etc_file(&format!("{etc}/hostname"), &format!("{hostname}\n"))?;
     for f in ["hosts", "hostname"] {
         let p = format!("{etc}/{f}");
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644))
@@ -1071,5 +1111,26 @@ mod tests {
                 "the precheck error must name the render group:\n{err}"
             );
         }
+    }
+
+    /// Decision #52: a pre-existing /etc file this process cannot
+    /// write (the confined ↔ unconfined mode switch: a
+    /// `write`-denied label, exercised here as a mode-0000 file the
+    /// owner still cannot write) must be recreated, not fatal.
+    #[test]
+    fn write_etc_file_recreates_a_write_denied_preexisting() {
+        let tmp = crate::testutil::TmpDir::new("etc-recreate");
+        let p = tmp.path().join("etc/hosts");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "old\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        write_etc_file(p.to_str().unwrap(), "new\n").expect("the self-heal must succeed");
+
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "new\n",
+            "the file must be recreated with the new content"
+        );
     }
 }
