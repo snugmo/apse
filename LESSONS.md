@@ -1095,3 +1095,27 @@ write-up.
     Both facts shape `--focus` resolution (PLAN 6.5.8/6.5.9): the window's *pid* — never its
     `app_id`, which is the app's self-reported identity — is the identity anchor.
     — *found checking two live `foot` instances for the paste-arm/copy-out plan items (2026-11-19).*
+
+91. **An `EACCES` on a file you own is SELinux talking, and the audit log is the only
+    record of a silent denial.** `the_rootfs_matches_the_reference` failed writing
+    `/run/user/<uid>/apse/<inst>/etc/hosts` with Permission denied. DAC was exonerated
+    (owner, mode 0644 — the write succeeds from a plain user-namespace child), and
+    *every* namespace combination was exonerated by a probe (user, mount, pid, cgroup,
+    ipc, uts, net — any subset, all pass); the app's own logs carried no denial (a
+    seccomp-notify or Landlock floor would have named itself). The machine was
+    SELinux-*Enforcing* with the custom module installed, and the denial was silent
+    everywhere except `/var/log/audit/audit.log`, where one `sudo grep 'denied'` gave
+    the whole truth: `avc: denied { write } … scontext=…unconfined_t:s0-s0:c0.c1023
+    tcontext=…apse_etc_t:s0` — the file's label (born by a *creator-type-scoped* named
+    filetrans in a confined run) is unwritable by the unconfined run that tried to
+    rewrite it. Two durable facts: (1) when a write fails EACCES on a file you own,
+    check `audit.log`/`ausearch` *before* theorizing about namespaces or mount flags —
+    on this kernel DAC, namespaces, seccomp and Landlock all leave other traces, but
+    an enforcing-SELinux denial leaves only the audit record; (2) a named filetrans
+    labels inodes by **name in the creator's type**, the label sticks to the inode
+    across modes, and the rule is invisible to `matchpathcon` — so an artifact of one
+    confinement mode can be unwritable (and unidentifiable) to the other; the safe fix
+    is *recreate* (a fresh inode is re-labelled by the new creator's filetrans), never
+    `relabelto`, and a reader holding a **bound** copy of the old inode is unaffected
+    by the unlink (the mount holds the inode). — *found from the 2026-11-13/11-19
+    `etc/hosts` failures; fixed in v2.36 (decision #52).*
