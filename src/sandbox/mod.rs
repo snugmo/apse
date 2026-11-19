@@ -947,8 +947,10 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
             // `dbus-proxy`, `xwayland`) may bind its public socket
             // here too, and a blind `remove_dir_all` would destroy a
             // running sidecar's socket file (decision #40) — so the
-            // removal spares the live ones.
-            remove_runtime_dir(&runtime_dir, own_tagged.as_deref());
+            // removal spares the live ones; and it may be *owned by
+            // another run* (decision #51) — then only this run's own
+            // artifacts may go.
+            teardown_runtime_dir(&runtime_dir, own_tagged.as_deref(), runtime_dir_preexisting);
             // 5.4: the signals S was asked to stop on override the
             // app's status: HUP keeps the historical `apse`
             // semantics — 129 (128+SIGHUP) — and a TERM/INT that
@@ -965,6 +967,49 @@ pub(crate) fn run_sandboxed(command: &[OsString], config: &SandboxConfig) -> Res
             Ok(code)
         }
     }
+}
+
+/// Teardown of the per-instance runtime dir (5.4), routing the
+/// removal by **ownership** (decisions #40, #49, #51):
+///
+/// * the dir **this run created**: full sweep
+///   ([`remove_runtime_dir`]) — everything in it is this run's, the
+///   live sidecar sockets are spared by the liveness probe;
+/// * the dir **pre-existing this run**: it belongs to another run
+///   (live or dead) or a sidecar, so its contents are left in
+///   place; only this run's **own** tagged socket is unlinked by
+///   path (it either created the file or re-bound it over a stale
+///   one — in which case the previous owner is provably dead, the
+///   preparation's probe refused to continue otherwise).
+///
+/// The pre-existing-dir arm is the same protection the *pre-fork*
+/// failure path got in decision #49, extended to the *post-run*
+/// path: a run that found the dir already there (a duplicate of a
+/// live instance, a `--wayland`-less run sharing an instance with a
+/// sidecar) must not sweep it at teardown. The 2026-11-19 incident
+/// is the evidence: a test run against a live instance's dir died
+/// in setup, and this teardown destroyed the live instance's
+/// `etc/` carry (the socket survived on the liveness probe alone,
+/// the plain files did not).
+///
+/// All steps are best-effort: a failure here only loses hygiene,
+/// never the run's result.
+fn teardown_runtime_dir(dir: &str, own_tagged: Option<&str>, preexisting: bool) {
+    if !preexisting {
+        remove_runtime_dir(dir, own_tagged);
+        return;
+    }
+    if let Some(path) = own_tagged {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => warn!("cleaning up the tagged socket {path:?} failed: {e}"),
+        }
+    }
+    debug!(
+        "runtime dir {dir:?} pre-existed this run: left in place \
+         (only this run's own artifacts were removed)"
+    );
 }
 
 /// Best-effort removal of the per-instance runtime dir that spares
@@ -1504,7 +1549,8 @@ fn exec_app(command: &[OsString], env: &std::collections::BTreeMap<String, Strin
 mod tests {
     use super::{
         A_S_GONE, SandboxConfig, WaylandSpec, a_pdeath_check, a_s_gone_handler, a_tear_down,
-        remove_owned_runtime_dir, remove_runtime_dir, run_sandboxed, waitpid_retry,
+        remove_owned_runtime_dir, remove_runtime_dir, run_sandboxed, teardown_runtime_dir,
+        waitpid_retry,
     };
     use crate::sandbox::mounts;
     use crate::sandbox::namespaces::NetworkMode;
@@ -1694,6 +1740,68 @@ mod tests {
             "a file outside the instance dir must survive"
         );
         assert!(!inst.exists(), "the empty instance dir itself must go");
+    }
+
+    /// Decision #51: a run that found the instance dir already
+    /// there must leave it (and its contents) at teardown — only
+    /// its own tagged socket is unlinked; a dir it created is
+    /// swept as before (decision #40).
+    #[test]
+    fn teardown_runtime_dir_by_ownership() {
+        let tmp = crate::testutil::TmpDir::new("teardown-ownership");
+
+        // Pre-existing dir: the owner's files survive, the run's
+        // own tagged socket goes.
+        let inst = tmp.path().join("inst");
+        std::fs::create_dir_all(inst.join("etc")).unwrap();
+        std::fs::write(inst.join("etc/hosts"), "owner\n").unwrap();
+        std::fs::write(inst.join("pdeathsig-restore-10.so"), "shim\n").unwrap();
+        std::fs::write(inst.join("wayland-1"), "sock\n").unwrap();
+
+        teardown_runtime_dir(
+            inst.to_str().unwrap(),
+            Some(inst.join("wayland-1").to_str().unwrap()),
+            true,
+        );
+
+        assert!(
+            !inst.join("wayland-1").exists(),
+            "the run's own socket is unlinked"
+        );
+        assert!(
+            inst.join("etc/hosts").exists(),
+            "the owner's etc/ carry must survive"
+        );
+        assert!(
+            inst.join("pdeathsig-restore-10.so").exists(),
+            "the owner's shim must survive"
+        );
+        assert!(inst.exists(), "the dir itself must survive");
+
+        // Pre-existing dir, no tagged socket (a --wayland-less run):
+        // nothing is removed at all.
+        let inst2 = tmp.path().join("inst2");
+        std::fs::create_dir_all(inst2.join("etc")).unwrap();
+        std::fs::write(inst2.join("etc/hostname"), "owner\n").unwrap();
+
+        teardown_runtime_dir(inst2.to_str().unwrap(), None, true);
+
+        assert!(inst2.join("etc/hostname").exists(), "nothing is removed");
+
+        // A dir this run created: full sweep (the decision #40
+        // behaviour, dead socket and files removed, dir rmdir'd).
+        let inst3 = tmp.path().join("inst3");
+        std::fs::create_dir_all(inst3.join("etc")).unwrap();
+        std::fs::write(inst3.join("etc/hosts"), "ours\n").unwrap();
+        std::fs::write(inst3.join("wayland-1"), "sock\n").unwrap();
+
+        teardown_runtime_dir(
+            inst3.to_str().unwrap(),
+            Some(inst3.join("wayland-1").to_str().unwrap()),
+            false,
+        );
+
+        assert!(!inst3.exists(), "a dir this run created is swept");
     }
 
     fn tagged_config() -> SandboxConfig {
