@@ -91,7 +91,7 @@
 
 use std::io::{self, Write as _};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::process::CommandExt as _;
 use std::process;
 
@@ -337,12 +337,43 @@ fn displayfd_socketpair() -> Result<(OwnedFd, OwnedFd)> {
 /// A stale socket file from a crashed run is removed first (a
 /// `bind(2)` onto an existing unix socket path is `EADDRINUSE`).
 fn create_listen_socket(path: &str) -> Result<OwnedFd> {
+    // Probe an existing file first (the same test
+    // `wayland::listener::bind_socket` uses, decision #40): a path a
+    // *live* process serves — a satellite already running for this
+    // instance (a failed duplicate must not unlink it: the live
+    // X server's listener fd outlives the file, but every X client
+    // connecting by path breaks) — or a non-socket file, is
+    // rejected without touching the file. A *stale* socket of a
+    // dead server (a refused connect) is removed, as before.
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.file_type().is_socket() {
+            match std::os::unix::net::UnixStream::connect(path) {
+                Ok(_) => {
+                    anyhow::bail!(
+                        "{path} is served by a live process (connect \
+                         succeeded); stop that process first (a \
+                         previous satellite still running?)"
+                    )
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    let _ = std::fs::remove_file(path);
+                }
+                Err(e) => anyhow::bail!("probing {path} failed: {e}"),
+            }
+        } else {
+            anyhow::bail!(
+                "{path} already exists and is not a socket; \
+                 move or delete it before starting apse"
+            )
+        }
+    }
     let fd = socket_cloexec()?;
     if let Err(e) = bind_unix(&fd.as_fd(), path) {
         drop(fd);
-        // A failed bind (e.g. `EADDRINUSE`) would otherwise leave an
-        // unbound socket file behind; don't.
-        let _ = std::fs::remove_file(path);
+        // A failed bind creates no file (the path was verified
+        // absent above, or its stale socket was removed): a file
+        // appearing here belongs to a racing process and must not
+        // be removed.
         return Err(e);
     }
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
@@ -1005,5 +1036,91 @@ mod tests {
         assert!(validate_id("", "app").is_err());
         assert!(validate_id("../..", "app").is_err());
         assert!(validate_id("a/b", "app").is_err());
+    }
+
+    // Decision #50: a failed satellite start must not destroy the
+    // live satellite's X socket (decision #40's probe, applied to
+    // the satellite's own bind).
+
+    /// A removed-on-drop temp dir (`testutil::TmpDir` is a
+    /// binary-only module; this module is library-only, so a
+    /// minimal local copy).
+    struct TmpDir(std::path::PathBuf);
+
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("apse-xwayland-test-{}-{tag}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            TmpDir(dir)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Close a listener behind the wrapper's back, leaving the
+    /// socket file in place — a satellite that died without
+    /// unlinking.
+    fn leave_stale_socket(listener: std::os::unix::net::UnixListener) {
+        let raw = listener.as_raw_fd();
+        // SAFETY: `raw` is the listener's own fd; closing it out
+        // from under the wrapper and forgetting the wrapper means
+        // the fd is closed exactly once.
+        unsafe { libc::close(raw) };
+        std::mem::forget(listener);
+    }
+
+    #[test]
+    fn listen_socket_refuses_a_live_one_without_removing_it() {
+        let tmp = TmpDir::new("xwayland-live");
+        let path = tmp.path().join("xwayland.sock");
+        let live = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        // The duplicate must be rejected …
+        let err = create_listen_socket(path.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("served by a live process"));
+        // … without touching the live satellite's socket.
+        assert!(
+            path.exists(),
+            "a live satellite's X socket must survive a duplicate start"
+        );
+        std::os::unix::net::UnixStream::connect(&path)
+            .unwrap_or_else(|e| panic!("the kept socket must still serve: {e}"));
+        drop(live);
+    }
+
+    #[test]
+    fn listen_socket_replaces_a_stale_one() {
+        let tmp = TmpDir::new("xwayland-stale");
+        let path = tmp.path().join("xwayland.sock");
+        let stale = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        leave_stale_socket(stale);
+        // A dead server's socket is removed and the bind proceeds.
+        let fd = create_listen_socket(path.to_str().unwrap()).unwrap();
+        std::os::unix::net::UnixStream::connect(&path)
+            .unwrap_or_else(|e| panic!("the new socket must serve: {e}"));
+        drop(fd);
+    }
+
+    #[test]
+    fn listen_socket_refuses_a_non_socket_file_without_removing_it() {
+        let tmp = TmpDir::new("xwayland-nonsock");
+        let path = tmp.path().join("xwayland.sock");
+        std::fs::write(&path, "not a socket").unwrap();
+        let err = create_listen_socket(path.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("not a socket"));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "not a socket",
+            "a non-socket file must survive"
+        );
     }
 }
