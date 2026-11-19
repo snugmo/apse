@@ -338,7 +338,8 @@ fn displayfd_socketpair() -> Result<(OwnedFd, OwnedFd)> {
 /// `bind(2)` onto an existing unix socket path is `EADDRINUSE`).
 fn create_listen_socket(path: &str) -> Result<OwnedFd> {
     // Probe an existing file first (the same test
-    // `wayland::listener::bind_socket` uses, decision #40): a path a
+    // `wayland::listener::bind_socket` uses — decision #40's probe,
+    // decision #50 for X): a path a
     // *live* process serves — a satellite already running for this
     // instance (a failed duplicate must not unlink it: the live
     // X server's listener fd outlives the file, but every X client
